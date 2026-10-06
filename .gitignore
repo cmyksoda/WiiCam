@@ -1,0 +1,18 @@
+/build/
+/dist/apps/wc04-camera/boot.dol
+/dist/*.zip
+__pycache__/
+
+# Local research, session records, and generated previews.
+/research/
+/notes/
+/artifacts/
+*.log
+session.log.txt
+
+# Assistant configuration and working files.
+AGENTS.md
+CLAUDE.md
+.codex/
+.claude/
+.agents/

@@ -1,0 +1,38 @@
+WC04 Camera 0.1.1 - DIAGNOSTIC / EXPERIMENTAL
+
+Compiled and host-tested. The previous build discovered the WC04, negotiated
+a stream, and activated the blue light on a tester's Wii, but saved no photo.
+This build adds diagnostics; it is not a confirmed capture fix.
+Successful photo capture and Photo Channel playback remain unverified.
+
+Copy apps/wc04-camera to the SD root's apps directory. Requires a WC04
+(057e:030a), writable FAT SD card, Wii Remote, and Homebrew Channel on IOS58.
+The app does not install or reload IOS and does not write to NAND.
+
+2: scan / log descriptors
+1: toggle 320x240 and 640x480
+A: capture; after saving, A opens the preview
+B: cancel capture; A/B leaves the preview
+HOME: exit
+
+Photos: sd:/DCIM/100WC04/WC04####.JPG (existing files are not overwritten)
+Log: sd:/wc04-camera/session.log (appended)
+
+Logs include the Wii clock and monotonic elapsed seconds with milliseconds.
+The Wii clock may be inaccurate; elapsed time does not depend on it.
+Timeout, B, and exit requests are identified separately. A USB completion
+after a stop request is recorded separately from an earlier USB failure.
+
+Please test A at the default 320x240 without pressing B (up to 10 seconds),
+then test 640x480. Finally try B during a separate capture. Exit normally
+and return session.log with the steps taken and any saved test photo.
+Packet samples are written after capture, avoiding SD writes in reception.
+
+There is no live viewfinder. Photographs are re-encoded as baseline JPEGs.
+After exiting, try viewing them through the Photo Channel's SD-card option.
+
+If cancellation waits for USB completion, unplug the camera. A wedged IOS
+control request may require restarting the console. This is a prototype.
+
+This software is based in part on the work of the Independent JPEG Group.
+See licenses/ for the application and third-party notices.
