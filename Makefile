@@ -35,6 +35,10 @@ HOST_CC ?= cc
 JPEG_CFLAGS ?=
 JPEG_LIBS ?= -ljpeg
 test: | build
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/screen.c tests/test_screen.c -o build/test_screen
+	./build/test_screen
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -pthread -Isource source/preview.c tests/test_preview.c -o build/test_preview
+	./build/test_preview
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_uvc.c -o build/test_uvc
 	./build/test_uvc
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_probe.c -o build/test_probe

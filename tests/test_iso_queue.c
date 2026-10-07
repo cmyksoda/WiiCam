@@ -158,7 +158,7 @@ int main(void)
             assert(fake.queue.drained == ISO_QUEUE_DEPTH - 1);
         }
     }
-    const IsoStop reasons[] = {ISO_CANCELLED, ISO_EXIT, ISO_TIMEOUT};
+    const IsoStop reasons[] = {ISO_CANCELLED, ISO_EXIT, ISO_TIMEOUT, ISO_PHOTO_READY};
     for (unsigned i = 0; i < sizeof(reasons) / sizeof(reasons[0]); ++i) {
         for (unsigned normal = 0; normal < 2; ++normal) {
             Fake fake = {

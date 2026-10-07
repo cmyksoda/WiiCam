@@ -22,8 +22,10 @@
 #include "uvc.h"
 #include "log.h"
 #include "iso_queue.h"
+#include "screen.h"
+#include "preview.h"
 
-#define CAPTURE_SECONDS 10
+#define FRAME_TIMEOUT_SECONDS 10
 #define CONFIG_CAPACITY 4096
 
 static uint8_t *config;
@@ -36,11 +38,33 @@ static volatile bool exit_requested;
 static bool mounted;
 static FILE *log_file;
 static uint64_t session_start;
-static void *xfb;
+static void *xfb[2];
+static unsigned back_buffer;
+static bool widescreen;
+static uint8_t preview_jpeg[WC04_FRAME_CAPACITY];
+static uint8_t worker_stack[64 * 1024] ATTRIBUTE_ALIGN(32);
 static GXRModeObj *video;
 
 s32 WC04_SetAlternate(s32 device_id, u8 alternate);
 s32 WC04_CancelIso(s32 device_id, u8 endpoint);
+
+static void draw_screen(ScreenPage page, const uint8_t *pixels,
+                         unsigned width, unsigned height, const char *status)
+{
+    Screen screen = {
+        .pixels = xfb[back_buffer], .width = video->fbWidth, .height = video->xfbHeight,
+        .stride = VIDEO_PadFramebufferWidth(video->fbWidth), .widescreen = widescreen
+    };
+    screen_draw(&screen, page, pixels, width, height, status, mounted);
+    DCFlushRange(xfb[back_buffer], VIDEO_GetFrameBufferSize(video));
+    VIDEO_SetNextFramebuffer(xfb[back_buffer]);
+    VIDEO_Flush();
+    /* Only the drawing thread waits; USB reception remains runnable. */
+    do {
+        VIDEO_WaitVSync();
+    } while (VIDEO_GetCurrentFramebuffer() != xfb[back_buffer]);
+    back_buffer ^= 1;
+}
 
 static bool allocate_usb_buffers(void)
 {
@@ -68,9 +92,6 @@ static void log_text(const char *text)
 static void report(const char *format, ...)
 {
     va_list args;
-    va_start(args, format);
-    vprintf(format, args);
-    va_end(args);
     if (log_file) {
         char message[1024];
         va_start(args, format);
@@ -321,15 +342,57 @@ typedef struct {
     PacketSample first[ISO_PACKETS], packed[ISO_PACKETS];
     PacketSample first_payload, first_error, largest;
     int first_result;
+    Preview preview;
+    atomic_bool worker_stop;
+    atomic_uint last_decoded_ms;
+    lwp_t worker;
+    uint64_t last_input;
+    unsigned decoded, skipped, displayed, first_decoded_ms, shutter_ms;
+    uint64_t max_decode_time;
 } Capture;
+
+static void *preview_worker(void *context)
+{
+    Capture *capture = context;
+    uint64_t last_draw = 0;
+    while (!atomic_load_explicit(&capture->worker_stop, memory_order_acquire)) {
+        if (!preview_take(&capture->preview)) {
+            usleep(1000);
+            continue;
+        }
+        uint64_t decode_start = gettime();
+        bool decoded = photo_decode(capture->preview.jpeg, capture->preview.length,
+                                     rgb, capture->mode->width, capture->mode->height);
+        uint64_t decode_time = gettime() - decode_start;
+        if (decode_time > capture->max_decode_time)
+            capture->max_decode_time = decode_time;
+        if (decoded) {
+            ++capture->decoded;
+            uint64_t now = gettime();
+            if (capture->decoded == 1)
+                capture->first_decoded_ms = (unsigned)ticks_to_millisecs(now - capture->start);
+            atomic_store_explicit(&capture->last_decoded_ms,
+                (unsigned)ticks_to_millisecs(now - capture->start), memory_order_release);
+            if (!capture->preview.save && (!last_draw || ticks_to_millisecs(now - last_draw) >= 66)) {
+                draw_screen(SCREEN_LIVE, rgb, capture->mode->width, capture->mode->height,
+                            mounted ? "FRAME YOUR SHOT" : "INSERT SD AND RESTART TO SAVE");
+                last_draw = now;
+                ++capture->displayed;
+            }
+        } else
+            ++capture->rejected;
+        preview_finish(&capture->preview, decoded);
+    }
+    return NULL;
+}
 
 static const char *stop_description(IsoStop stop)
 {
     switch (stop) {
-    case ISO_PHOTO_READY: return "decoded JPEG";
+    case ISO_PHOTO_READY: return "shutter photo decoded";
     case ISO_CANCELLED: return "B pressed";
     case ISO_EXIT: return "HOME/power/reset exit requested";
-    case ISO_TIMEOUT: return "10-second capture timeout";
+    case ISO_TIMEOUT: return "no decoded frame for 10 seconds";
     case ISO_SUBMIT_FAILED: return "USB submission failure";
     case ISO_COMPLETION_FAILED: return "USB completion failure before cancellation";
     default: return "capture running";
@@ -338,13 +401,26 @@ static const char *stop_description(IsoStop stop)
 
 static IsoStop poll_capture(void *context)
 {
-    const Capture *capture = context;
-    uint32_t down = buttons();
+    Capture *capture = context;
+    uint64_t now = gettime();
+    uint32_t down = 0;
+    if (ticks_to_millisecs(now - capture->last_input) >= 10) {
+        down = buttons();
+        capture->last_input = now;
+    }
     if (exit_requested)
         return ISO_EXIT;
     if (down & WPAD_BUTTON_B)
         return ISO_CANCELLED;
-    if (ticks_to_millisecs(gettime() - capture->start) >= CAPTURE_SECONDS * 1000)
+    if (mounted && (down & WPAD_BUTTON_A) && !atomic_load(&capture->preview.shutter)) {
+        capture->shutter_ms = (unsigned)ticks_to_millisecs(now - capture->start);
+        preview_shutter(&capture->preview);
+    }
+    if (preview_photo_ready(&capture->preview))
+        return ISO_PHOTO_READY;
+    unsigned last = atomic_load_explicit(&capture->last_decoded_ms, memory_order_acquire);
+    unsigned elapsed = (unsigned)ticks_to_millisecs(gettime() - capture->start);
+    if (elapsed - last >= FRAME_TIMEOUT_SECONDS * 1000)
         return ISO_TIMEOUT;
     return ISO_RUNNING;
 }
@@ -357,7 +433,11 @@ static void idle_capture(void *context)
 
 static void stopping_capture(void *context, IsoStop reason, int failure)
 {
-    (void)context;
+    Capture *capture = context;
+    atomic_store_explicit(&capture->worker_stop, true, memory_order_release);
+    LWP_JoinThread(capture->worker, NULL);
+    draw_screen(SCREEN_WAITING, reason == ISO_PHOTO_READY ? rgb : NULL,
+                capture->mode->width, capture->mode->height, "STOPPING CAMERA");
     report("Capture stop requested: %s.\n", stop_description(reason));
     if (reason == ISO_SUBMIT_FAILED || reason == ISO_COMPLETION_FAILED)
         report("USB failure result: %d\n", failure);
@@ -366,6 +446,8 @@ static void stopping_capture(void *context, IsoStop reason, int failure)
 static void cancel_capture(void *context)
 {
     const Capture *capture = context;
+    draw_screen(SCREEN_WAITING, NULL, capture->mode->width, capture->mode->height,
+                "IF STUCK HERE UNPLUG CAMERA");
     s32 result = WC04_CancelIso(capture->handle, capture->alt->endpoint);
     report("Cancel endpoint: %ld. Waiting for all queued USB completions.\n", (long)result);
     report("If stuck, unplug camera.\n");
@@ -431,16 +513,14 @@ static bool consume_capture(void *context, const IsoSlot *slot)
         }
         /* IOS retains requested strides; returned sizes are actual lengths. */
         if (uvc_packet(frame, packet, length)) {
-            if (photo_decode(frame->data, frame->size, rgb,
-                             capture->mode->width, capture->mode->height))
-                return true;
-            ++capture->rejected;
+            if (!preview_offer(&capture->preview, frame->data, frame->size))
+                ++capture->skipped;
         }
     }
     return false;
 }
 
-static bool receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate *alt)
+static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate *alt)
 {
     Capture capture = {
         .handle = handle, .mode = mode, .alt = alt, .min_length = ISO_MAX_PAYLOAD
@@ -452,9 +532,18 @@ static bool receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate *a
         .submit = submit_capture, .consume = consume_capture, .poll = poll_capture,
         .idle = idle_capture, .stopping = stopping_capture, .cancel = cancel_capture
     };
-    report("Capturing with %u queued batches of %u slots. B cancels, HOME exits.\n",
+    report("Viewfinder with %u queued batches of %u slots. A takes photo, B stops, HOME exits.\n",
            ISO_QUEUE_DEPTH, ISO_PACKETS);
+    preview_init(&capture.preview, preview_jpeg, sizeof(preview_jpeg));
+    atomic_init(&capture.worker_stop, false);
+    atomic_init(&capture.last_decoded_ms, 0);
+    draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height, "WAITING FOR FIRST FRAME");
     capture.start = gettime();
+    if (LWP_CreateThread(&capture.worker, preview_worker, &capture, worker_stack,
+                         sizeof(worker_stack), 60) < 0) {
+        report("Could not start preview worker.\n");
+        return ISO_SUBMIT_FAILED;
+    }
     IsoStop stop = iso_queue_run(&queue, &hooks, &capture);
     const UvcFrame *frame = &capture.frame;
     const UvcStats *stats = &frame->stats;
@@ -500,7 +589,13 @@ static bool receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate *a
             log_sample("First apparent ERR flag", &capture.first_error);
         fflush(log_file);
     }
-    return stop == ISO_PHOTO_READY;
+    report("Preview decoded %u, skipped while busy %u.\n", capture.decoded, capture.skipped);
+    report("Preview displayed %u; first decode +%u ms; longest decode %llu us\n",
+           capture.displayed, capture.first_decoded_ms,
+           (unsigned long long)ticks_to_microsecs(capture.max_decode_time));
+    if (atomic_load(&capture.preview.shutter))
+        report("Shutter pressed at viewfinder +%u ms\n", capture.shutter_ms);
+    return stop;
 }
 
 static bool save_photo(unsigned width, unsigned height, char path[80])
@@ -543,61 +638,20 @@ static bool save_photo(unsigned width, unsigned height, char path[80])
     return ok;
 }
 
-static uint8_t clamp(int value)
-{
-    return (uint8_t)(value < 0 ? 0 : value > 255 ? 255 : value);
-}
-
-static void show_photo(unsigned width, unsigned height)
-{
-    printf("\x1b[2J\x1b[HWC04 Camera - captured photo\n\nA / B: menu    HOME: exit\n");
-    unsigned out_width = width > 320 ? width / 2 : width;
-    unsigned out_height = height > 240 ? height / 2 : height;
-    unsigned left = ((video->fbWidth - out_width) / 2) & ~1u;
-    unsigned top = (video->xfbHeight - out_height) / 2;
-    uint8_t *screen = xfb;
-    for (unsigned y = 0; y < out_height; ++y) {
-        for (unsigned x = 0; x < out_width; x += 2) {
-            int yy[2], cb[2], cr[2];
-            for (unsigned p = 0; p < 2; ++p) {
-                size_t pos = ((size_t)(y * height / out_height) * width +
-                              (x + p) * width / out_width) * 3;
-                int r = rgb[pos], g = rgb[pos + 1], b = rgb[pos + 2];
-                yy[p] = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-                cb[p] = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-                cr[p] = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-            }
-            size_t dest = ((size_t)(top + y) * VIDEO_PadFramebufferWidth(video->fbWidth) + left + x) * 2;
-            screen[dest] = clamp(yy[0]);
-            screen[dest + 1] = clamp((cb[0] + cb[1]) / 2);
-            screen[dest + 2] = clamp(yy[1]);
-            screen[dest + 3] = clamp((cr[0] + cr[1]) / 2);
-        }
-    }
-    while (!exit_requested) {
-        if (buttons() & (WPAD_BUTTON_A | WPAD_BUTTON_B))
-            break;
-        VIDEO_WaitVSync();
-    }
-}
-
 int main(void)
 {
     session_start = gettime();
     bool buffers_ready = allocate_usb_buffers();
     VIDEO_Init();
     video = VIDEO_GetPreferredMode(NULL);
-    xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(video));
-    if (!xfb)
+    xfb[0] = SYS_AllocateFramebuffer(video);
+    xfb[1] = SYS_AllocateFramebuffer(video);
+    if (!xfb[0] || !xfb[1])
         return 1;
+    widescreen = CONF_GetAspectRatio() == CONF_ASPECT_16_9;
     VIDEO_Configure(video);
-    VIDEO_ClearFrameBuffer(video, xfb, COLOR_BLACK);
-    console_init(xfb, 20, 20, video->fbWidth - 40, video->xfbHeight - 40,
-                 VIDEO_PadFramebufferWidth(video->fbWidth) * 2);
-    VIDEO_SetNextFramebuffer(xfb);
     VIDEO_SetBlack(FALSE);
-    VIDEO_Flush();
-    VIDEO_WaitVSync();
+    LWP_SetThreadPriority(LWP_GetSelf(), 80);
     WPAD_Init();
     SYS_SetResetCallback(reset_pressed);
     SYS_SetPowerCallback(request_exit);
@@ -605,63 +659,77 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWC04 Camera 0.1.3 experimental - IOS %u\n", IOS_GetVersion());
+    report("\nWC04 Camera 0.2.0 experimental - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
-    report("Hardware capture and Photo Channel playback are unverified.\n");
+    report("0.1.3 captures and Photo Channel playback confirmed by tester; new viewfinder pending hardware test.\n");
     bool usb_ready = false;
     if (IOS_GetVersion() == 58)
         usb_ready = buffers_ready && USB_Initialize() >= 0;
     else
         report("Launch under IOS58. This app does not install/reload IOS.\n");
     unsigned width = 320, height = 240;
-    bool menu = true;
+    char status[80];
+    snprintf(status, sizeof(status), "%s", !usb_ready ? "CAMERA NEEDS IOS58 AND USB" :
+             mounted ? "CONNECT CAMERA THEN PRESS A" : "SD MISSING - PREVIEW ONLY");
+    bool menu = true, open_live = false;
     while (!exit_requested) {
         if (menu) {
-            report("\nA: capture %ux%u    1: change resolution\n", width, height);
-            report("2: scan camera       HOME: exit\n");
-            report("SD: %s   USB: %s\n", mounted ? "mounted" : "unavailable",
-                   usb_ready ? "initialized" : "unavailable");
+            draw_screen(SCREEN_MENU, NULL, width, height, status);
             menu = false;
         }
         uint32_t down = buttons();
+        if (exit_requested)
+            break;
         if (down & WPAD_BUTTON_1) {
             width = width == 320 ? 640 : 320;
             height = width == 320 ? 240 : 480;
             menu = true;
         }
-        if (usb_ready && (down & (WPAD_BUTTON_A | WPAD_BUTTON_2))) {
-            printf("\x1b[2J\x1b[H");
+        if (usb_ready && (open_live || (down & (WPAD_BUTTON_A | WPAD_BUTTON_2)))) {
+            bool scanning = !open_live && !(down & WPAD_BUTTON_A);
+            open_live = false;
+            draw_screen(SCREEN_WAITING, NULL, width, height, "CONNECTING CAMERA");
             s32 handle;
+            snprintf(status, sizeof(status), "CAMERA NOT FOUND - CHECK USB");
             if (find_camera(&handle)) {
                 UvcMode mode;
                 UvcAlternate alt;
                 bool mode_ok = read_mode(handle, width, height, &mode);
-                bool captured = false;
-                if (mode_ok && (down & WPAD_BUTTON_A)) {
-                    if (mounted && negotiate(handle, &mode, &alt))
-                        captured = receive_photo(handle, &mode, &alt);
-                    else if (!mounted)
-                        report("Insert writable SD and restart before capturing.\n");
+                IsoStop result = ISO_SUBMIT_FAILED;
+                snprintf(status, sizeof(status), "%s", mode_ok ? "CAMERA FOUND - READY" :
+                         "CAMERA SETUP FAILED - SEE LOG");
+                if (mode_ok && !scanning) {
+                    if (negotiate(handle, &mode, &alt))
+                        result = receive_photo(handle, &mode, &alt);
                     s32 stopped = WC04_SetAlternate(handle, 0);
                     report("Stop streaming: %ld\n", (long)stopped);
+                    snprintf(status, sizeof(status), "%s", result == ISO_CANCELLED ?
+                             "READY WHEN YOU ARE" : result == ISO_TIMEOUT ?
+                             "NO FRAMES - CHECK CAMERA AND LOG" : "CAMERA STOPPED - SEE LOG");
                 }
                 USB_CloseDevice(&handle);
-                if (captured) {
+                if (result == ISO_PHOTO_READY) {
                     char path[80];
-                    if (save_photo(width, height, path)) {
-                        report("Saved %s\nPress A to view.\n", path);
-                        while (!exit_requested) {
-                            if (buttons() & WPAD_BUTTON_A) {
-                                show_photo(width, height);
-                                break;
-                            }
-                            VIDEO_WaitVSync();
+                    draw_screen(SCREEN_REVIEW, rgb, width, height, "SAVING PHOTO");
+                    bool saved = save_photo(width, height, path);
+                    if (saved) {
+                        report("Saved %s\n", path);
+                        snprintf(status, sizeof(status), "SAVED %s", strrchr(path, '/') + 1);
+                    } else
+                        snprintf(status, sizeof(status), "SAVE FAILED - CHECK SD AND LOG");
+                    draw_screen(SCREEN_REVIEW, rgb, width, height, status);
+                    while (!exit_requested) {
+                        uint32_t review = buttons();
+                        if (exit_requested || (review & WPAD_BUTTON_B)) break;
+                        if (review & WPAD_BUTTON_A) {
+                            open_live = true;
+                            break;
                         }
+                        VIDEO_WaitVSync();
                     }
-                } else if (down & WPAD_BUTTON_A)
-                    report("No photo saved. See SD session.log for details.\n");
+                }
             }
-            menu = true;
+            menu = !open_live;
         }
         VIDEO_WaitVSync();
     }
