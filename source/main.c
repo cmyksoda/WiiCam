@@ -21,9 +21,8 @@
 #include "photo.h"
 #include "uvc.h"
 #include "log.h"
+#include "iso_queue.h"
 
-#define ISO_PACKETS 16
-#define ISO_MAX_PAYLOAD 3072
 #define CAPTURE_SECONDS 10
 #define CONFIG_CAPACITY 4096
 
@@ -33,8 +32,6 @@ static uint8_t *iso_data;
 static uint16_t *iso_sizes;
 static uint8_t frame_data[WC04_FRAME_CAPACITY];
 static uint8_t rgb[640 * 480 * 3];
-static volatile bool transfer_done;
-static volatile s32 transfer_result;
 static volatile bool exit_requested;
 static bool mounted;
 static FILE *log_file;
@@ -47,7 +44,8 @@ s32 WC04_CancelIso(s32 device_id, u8 endpoint);
 
 static bool allocate_usb_buffers(void)
 {
-    const size_t bytes = CONFIG_CAPACITY + 32 + ISO_PACKETS * ISO_MAX_PAYLOAD + 32;
+    const size_t bytes = CONFIG_CAPACITY + 32 + ISO_QUEUE_DEPTH * ISO_DATA_BYTES +
+                         ISO_QUEUE_DEPTH * ISO_PACKETS * sizeof(uint16_t);
     uintptr_t high = (uintptr_t)SYS_GetArena2Hi() & ~(uintptr_t)31;
     uintptr_t low = (uintptr_t)SYS_GetArena2Lo();
     if (high < low || high - low < bytes)
@@ -57,7 +55,7 @@ static bool allocate_usb_buffers(void)
     SYS_SetArena2Hi(config);
     probe = config + CONFIG_CAPACITY;
     iso_data = probe + 32;
-    iso_sizes = (uint16_t *)(iso_data + ISO_PACKETS * ISO_MAX_PAYLOAD);
+    iso_sizes = (uint16_t *)(iso_data + ISO_QUEUE_DEPTH * ISO_DATA_BYTES);
     return true;
 }
 
@@ -126,10 +124,7 @@ static uint32_t buttons(void)
 
 static s32 iso_finished(s32 result, void *context)
 {
-    (void)context;
-    transfer_result = result;
-    __sync_synchronize();
-    transfer_done = true;
+    iso_queue_complete(context, result);
     return 0;
 }
 
@@ -294,7 +289,8 @@ typedef struct {
     uint8_t data[32];
 } PacketSample;
 
-static void sample_packet(PacketSample *sample, unsigned slot, unsigned length,
+static void sample_packet(PacketSample *sample, const uint8_t *data,
+                          unsigned slot, unsigned length,
                           unsigned offset, uint64_t start)
 {
     sample->slot = slot;
@@ -302,7 +298,7 @@ static void sample_packet(PacketSample *sample, unsigned slot, unsigned length,
     sample->offset = offset;
     sample->elapsed_ms = ticks_to_millisecs(gettime() - start);
     sample->copied = length < sizeof(sample->data) ? length : sizeof(sample->data);
-    memcpy(sample->data, iso_data + offset, sample->copied);
+    memcpy(sample->data, data + offset, sample->copied);
 }
 
 static void log_sample(const char *label, const PacketSample *sample)
@@ -315,161 +311,196 @@ static void log_sample(const char *label, const PacketSample *sample)
     log_hex(sample->data, sample->copied);
 }
 
-static const char *capture_stop(uint64_t start)
+typedef struct {
+    s32 handle;
+    const UvcMode *mode;
+    const UvcAlternate *alt;
+    UvcFrame frame;
+    uint64_t start, last_batch, max_batch_gap;
+    unsigned rejected, oversized, batches, min_length, max_length;
+    PacketSample first[ISO_PACKETS], packed[ISO_PACKETS];
+    PacketSample first_payload, first_error, largest;
+    int first_result;
+} Capture;
+
+static const char *stop_description(IsoStop stop)
 {
+    switch (stop) {
+    case ISO_PHOTO_READY: return "decoded JPEG";
+    case ISO_CANCELLED: return "B pressed";
+    case ISO_EXIT: return "HOME/power/reset exit requested";
+    case ISO_TIMEOUT: return "10-second capture timeout";
+    case ISO_SUBMIT_FAILED: return "USB submission failure";
+    case ISO_COMPLETION_FAILED: return "USB completion failure before cancellation";
+    default: return "capture running";
+    }
+}
+
+static IsoStop poll_capture(void *context)
+{
+    const Capture *capture = context;
     uint32_t down = buttons();
     if (exit_requested)
-        return "HOME/power/reset exit requested";
+        return ISO_EXIT;
     if (down & WPAD_BUTTON_B)
-        return "B pressed";
-    if (ticks_to_millisecs(gettime() - start) >= CAPTURE_SECONDS * 1000)
-        return "10-second capture timeout";
-    return NULL;
+        return ISO_CANCELLED;
+    if (ticks_to_millisecs(gettime() - capture->start) >= CAPTURE_SECONDS * 1000)
+        return ISO_TIMEOUT;
+    return ISO_RUNNING;
+}
+
+static void idle_capture(void *context)
+{
+    (void)context;
+    usleep(100);
+}
+
+static void stopping_capture(void *context, IsoStop reason, int failure)
+{
+    (void)context;
+    report("Capture stop requested: %s.\n", stop_description(reason));
+    if (reason == ISO_SUBMIT_FAILED || reason == ISO_COMPLETION_FAILED)
+        report("USB failure result: %d\n", failure);
+}
+
+static void cancel_capture(void *context)
+{
+    const Capture *capture = context;
+    s32 result = WC04_CancelIso(capture->handle, capture->alt->endpoint);
+    report("Cancel endpoint: %ld. Waiting for all queued USB completions.\n", (long)result);
+    report("If stuck, unplug camera.\n");
+}
+
+static int submit_capture(void *context, IsoSlot *slot)
+{
+    const Capture *capture = context;
+    return USB_ReadIsoMsgAsync(capture->handle, capture->alt->endpoint, ISO_PACKETS,
+                               slot->sizes, slot->data, iso_finished, slot);
+}
+
+static bool consume_capture(void *context, const IsoSlot *slot)
+{
+    Capture *capture = context;
+    const UvcAlternate *alt = capture->alt;
+    UvcFrame *frame = &capture->frame;
+    uint64_t now = gettime();
+    if (capture->batches && now - capture->last_batch > capture->max_batch_gap)
+        capture->max_batch_gap = now - capture->last_batch;
+    capture->last_batch = now;
+    ++capture->batches;
+    if (capture->batches == 1) {
+        capture->first_result = slot->result;
+        unsigned packed_offset = 0;
+        bool packed_valid = true;
+        for (unsigned i = 0; i < ISO_PACKETS; ++i) {
+            unsigned length = slot->sizes[i];
+            unsigned bounded = length < alt->capacity ? length : alt->capacity;
+            sample_packet(&capture->first[i], slot->data, i, bounded,
+                          i * alt->capacity, capture->start);
+            capture->first[i].length = length;
+            if (length > alt->capacity)
+                packed_valid = false;
+            if (packed_valid) {
+                sample_packet(&capture->packed[i], slot->data, i, length,
+                              packed_offset, capture->start);
+                packed_offset += length;
+            } else
+                capture->packed[i].offset = UINT32_MAX;
+        }
+    }
+    for (unsigned i = 0; i < ISO_PACKETS; ++i) {
+        unsigned length = slot->sizes[i];
+        if (length > alt->capacity) {
+            frame->discard = true;
+            ++capture->oversized;
+            continue;
+        }
+        unsigned offset = i * alt->capacity;
+        const uint8_t *packet = slot->data + offset;
+        if (length < capture->min_length)
+            capture->min_length = length;
+        if (length > capture->max_length) {
+            capture->max_length = length;
+            sample_packet(&capture->largest, slot->data, i, length, offset, capture->start);
+        }
+        if (length >= 2) {
+            if (!capture->first_payload.copied && packet[0] >= 2 && packet[0] < length)
+                sample_packet(&capture->first_payload, slot->data, i, length, offset, capture->start);
+            if (!capture->first_error.copied && (packet[1] & 0x40))
+                sample_packet(&capture->first_error, slot->data, i, length, offset, capture->start);
+        }
+        /* IOS retains requested strides; returned sizes are actual lengths. */
+        if (uvc_packet(frame, packet, length)) {
+            if (photo_decode(frame->data, frame->size, rgb,
+                             capture->mode->width, capture->mode->height))
+                return true;
+            ++capture->rejected;
+        }
+    }
+    return false;
 }
 
 static bool receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate *alt)
 {
-    UvcFrame frame;
-    uvc_frame_init(&frame, frame_data, sizeof(frame_data));
-    uint64_t start = gettime();
-    unsigned rejected = 0, oversized = 0, batches = 0;
-    unsigned min_length = ISO_MAX_PAYLOAD, max_length = 0;
-    PacketSample first[ISO_PACKETS] = {0}, packed[ISO_PACKETS] = {0};
-    PacketSample first_payload = {0}, first_error = {0}, largest = {0};
-    s32 first_result = 0;
-    bool success = false;
-    const char *stop = NULL;
-    report("Capturing... B cancels, HOME exits.\n");
-    while (!success && !stop) {
-        stop = capture_stop(start);
-        if (stop) {
-            report("Capture stop requested: %s.\n", stop);
-            break;
-        }
-        memset(iso_data, 0, ISO_PACKETS * ISO_MAX_PAYLOAD);
-        for (unsigned i = 0; i < ISO_PACKETS; ++i)
-            iso_sizes[i] = alt->capacity;
-        transfer_done = false;
-        s32 result = USB_ReadIsoMsgAsync(handle, alt->endpoint, ISO_PACKETS,
-                                         iso_sizes, iso_data, iso_finished, NULL);
-        if (result < 0) {
-            report("Isochronous submission failed: %ld\n", (long)result);
-            stop = "USB submission failure";
-            break;
-        }
-        while (!transfer_done) {
-            if (!stop)
-                stop = capture_stop(start);
-            if (stop) {
-                report("Capture stop requested: %s.\n", stop);
-                s32 cancel = WC04_CancelIso(handle, alt->endpoint);
-                report("Cancel endpoint: %ld. Waiting for USB completion.\n", (long)cancel);
-                report("If stuck, unplug camera.\n");
-                while (!transfer_done) {
-                    buttons();
-                    usleep(100);
-                }
-            }
-            /* Keep buffers alive until IOS returns ownership, even on cancel. */
-            usleep(100);
-        }
-        __sync_synchronize();
-        if (stop) {
-            report("Isochronous completion after stop request: %ld\n", (long)transfer_result);
-            break;
-        }
-        if (transfer_result < 0) {
-            report("Isochronous completion failed: %ld\n", (long)transfer_result);
-            stop = "USB completion failure before cancellation";
-            break;
-        }
-        ++batches;
-        if (batches == 1) {
-            first_result = transfer_result;
-            unsigned packed_offset = 0;
-            bool packed_valid = true;
-            for (unsigned i = 0; i < ISO_PACKETS; ++i) {
-                unsigned length = iso_sizes[i];
-                unsigned bounded = length < alt->capacity ? length : alt->capacity;
-                sample_packet(&first[i], i, bounded, i * alt->capacity, start);
-                first[i].length = length;
-                if (length > alt->capacity)
-                    packed_valid = false;
-                if (packed_valid) {
-                    sample_packet(&packed[i], i, length, packed_offset, start);
-                    packed_offset += length;
-                } else
-                    packed[i].offset = UINT32_MAX;
-            }
-        }
-        for (unsigned i = 0; i < ISO_PACKETS; ++i) {
-            unsigned length = iso_sizes[i];
-            if (length > alt->capacity) {
-                frame.discard = true;
-                ++oversized;
-                continue;
-            }
-            unsigned offset = i * alt->capacity;
-            const uint8_t *packet = iso_data + offset;
-            if (length < min_length)
-                min_length = length;
-            if (length > max_length) {
-                max_length = length;
-                sample_packet(&largest, i, length, offset, start);
-            }
-            if (length >= 2) {
-                if (!first_payload.copied && packet[0] >= 2 && packet[0] < length)
-                    sample_packet(&first_payload, i, length, offset, start);
-                if (!first_error.copied && (packet[1] & 0x40))
-                    sample_packet(&first_error, i, length, offset, start);
-            }
-            /* Slots retain requested strides; returned sizes are actual lengths. */
-            if (uvc_packet(&frame, packet, length)) {
-                if (photo_decode(frame.data, frame.size, rgb, mode->width, mode->height)) {
-                    success = true;
-                    break;
-                }
-                ++rejected;
-            }
-        }
-    }
-    const UvcStats *stats = &frame.stats;
+    Capture capture = {
+        .handle = handle, .mode = mode, .alt = alt, .min_length = ISO_MAX_PAYLOAD
+    };
+    uvc_frame_init(&capture.frame, frame_data, sizeof(frame_data));
+    IsoQueue queue;
+    iso_queue_init(&queue, iso_data, iso_sizes, alt->capacity);
+    const IsoHooks hooks = {
+        .submit = submit_capture, .consume = consume_capture, .poll = poll_capture,
+        .idle = idle_capture, .stopping = stopping_capture, .cancel = cancel_capture
+    };
+    report("Capturing with %u queued batches of %u slots. B cancels, HOME exits.\n",
+           ISO_QUEUE_DEPTH, ISO_PACKETS);
+    capture.start = gettime();
+    IsoStop stop = iso_queue_run(&queue, &hooks, &capture);
+    const UvcFrame *frame = &capture.frame;
+    const UvcStats *stats = &frame->stats;
     report("Capture ended: %s; elapsed %llu ms (including drain).\n",
-           success ? "decoded JPEG" : stop, (unsigned long long)ticks_to_millisecs(gettime() - start));
-    report("Batches %u, slots %u, bytes %u, length %u..%u\n", batches,
-           stats->packets, stats->bytes, stats->packets ? min_length : 0, max_length);
+           stop_description(stop),
+           (unsigned long long)ticks_to_millisecs(gettime() - capture.start));
+    report("Queue submitted %u, consumed %u, drained %u; max consume gap %llu us\n",
+           queue.submitted, queue.consumed, queue.drained,
+           (unsigned long long)ticks_to_microsecs(capture.max_batch_gap));
+    for (unsigned i = 0; i < queue.drained; ++i)
+        report("Completion drained after stop: %d\n", queue.drain_results[i]);
+    report("Batches %u, slots %u, bytes %u, length %u..%u\n", capture.batches,
+           stats->packets, stats->bytes, stats->packets ? capture.min_length : 0,
+           capture.max_length);
     report("Empty %u, header-only %u, payload %u (%u bytes)\n",
            stats->empty, stats->header_only, stats->payload_packets, stats->payload_bytes);
     report("Bad headers %u, ERR %u, EOF %u, FID changes %u\n",
            stats->bad_headers, stats->errors, stats->eof, stats->fid_changes);
     report("Dropped %u: missing EOF %u, empty frames %u\n",
-           frame.dropped, stats->missing_eof, stats->empty_frames);
+           frame->dropped, stats->missing_eof, stats->empty_frames);
     report("Invalid JPEG %u, overflow %u\n", stats->invalid_jpeg, stats->overflow);
     report("JPEG candidates %u, decode rejected %u, oversized slots %u\n",
-           stats->complete, rejected, oversized);
+           stats->complete, capture.rejected, capture.oversized);
     report("Unfinished frame: %u bytes, discard=%u, ended=%u\n",
-           (unsigned)frame.size, frame.discard, frame.ended);
+           (unsigned)frame->size, frame->discard, frame->ended);
     if (stats->header_only && !stats->payload_bytes && !stats->bad_headers)
         report("Only UVC headers received; no image payload reached the decoder.\n");
-    /* Defer diagnostic I/O until IOS has returned the capture buffer. */
-    if (log_file && batches) {
-        report("First batch completion: %ld; packet samples in SD log.\n", (long)first_result);
+    /* All queued transfers have returned ownership before diagnostic I/O. */
+    if (log_file && capture.batches) {
+        report("First batch completion: %d; packet samples in SD log.\n", capture.first_result);
         for (unsigned i = 0; i < ISO_PACKETS; ++i) {
-            log_sample("Requested-stride sample", &first[i]);
-            if (packed[i].offset != UINT32_MAX)
-                log_sample("Packed-offset comparison (not parsed)", &packed[i]);
+            log_sample("Requested-stride sample", &capture.first[i]);
+            if (capture.packed[i].offset != UINT32_MAX)
+                log_sample("Packed-offset comparison (not parsed)", &capture.packed[i]);
             else
                 log_text("Packed comparison unavailable after invalid returned size.\n");
         }
-        if (largest.copied)
-            log_sample("Largest packet", &largest);
-        if (first_payload.copied)
-            log_sample("First apparent payload", &first_payload);
-        if (first_error.copied)
-            log_sample("First apparent ERR flag", &first_error);
+        if (capture.largest.copied)
+            log_sample("Largest packet", &capture.largest);
+        if (capture.first_payload.copied)
+            log_sample("First apparent payload", &capture.first_payload);
+        if (capture.first_error.copied)
+            log_sample("First apparent ERR flag", &capture.first_error);
         fflush(log_file);
     }
-    return success;
+    return stop == ISO_PHOTO_READY;
 }
 
 static bool save_photo(unsigned width, unsigned height, char path[80])
@@ -574,7 +605,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWC04 Camera 0.1.2 experimental - IOS %u\n", IOS_GetVersion());
+    report("\nWC04 Camera 0.1.3 experimental - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report("Hardware capture and Photo Channel playback are unverified.\n");
     bool usb_ready = false;

@@ -2,13 +2,13 @@
 
 An **experimental Wii photo-capture prototype** for the Ubisoft / Hercules WC04 USB camera, based on [ZodiaKGalXy's GBAtemp request](https://gbatemp.net/threads/homebrew-application-for-ubisoft-hercules-wc04-webcam.683135/).
 
-**Status:** physical Wii testing of 0.1.1 received valid UVC headers but **no image payload** at either resolution. Version **0.1.2-experimental** initializes negotiation from camera-provided parameters and logs the full probe/commit exchange. Wii compilation and host tests pass; successful photo capture and Photo Channel playback remain unverified.
+**Status:** physical Wii testing of 0.1.2 received JPEG fragments during one 320×240 attempt, but **no complete photograph**. Version **0.1.3-experimental** keeps four USB transfers queued to reduce gaps in reception. Wii compilation and host tests pass; successful photo capture and Photo Channel playback remain unverified.
 
 ## What is implemented
 
 - WC04-only discovery (`057e:030a`), selecting the video-streaming interface.
 - UVC 1.0 MJPEG descriptor parsing and probe/commit negotiation.
-- IOS58 isochronous input, frame assembly, error rejection, and cancellation.
+- Queued IOS58 isochronous input, frame assembly, error rejection, and cancellation.
 - 320×240 or 640×480 single-photo capture.
 - JPEG decoding followed by baseline JPEG encoding to SD.
 - Preview of the captured photograph after saving; **no live viewfinder**.
@@ -36,6 +36,14 @@ Choose **Digital Camera/Cell Phone** in the Photo Channel to read the SD card, a
 
 Capture attempts have a ten-second application deadline. An in-flight IOS transfer must finish before its buffers can be reused or the app can exit. Cancellation requests the IOS endpoint cancellation ioctl; **if the screen says it is waiting, unplug the camera**. Control requests and the cancellation ioctl are synchronous and have no app-enforced deadline. A wedged IOS may still require a console restart.
 
+The receiver queues four separate, aligned buffers of sixteen slots each.
+It processes them in submission order and reuses a buffer only after its
+completion callback. Success, cancellation, timeout, and USB failure all
+drain every submitted transfer before returning. Logs include submitted,
+consumed, and drained batch counts. The maximum consume gap measures CPU-side
+processing intervals; it is not a USB bus timing measurement. Zero invalid
+JPEGs can also mean no complete frame reached the decoder.
+
 ## Build
 
 Requires devkitPPC, libogc, and the PowerPC libjpeg-turbo portlib. This checkout built with devkitPPC GCC 16.1.0, libogc 3.1.0, and libjpeg-turbo 3.1.4.1.
@@ -59,7 +67,7 @@ which camera or host behavior prevents image delivery.
 
 The build uses a pinned copy of libogc's USB implementation with two added functions. It does **not** modify `/opt/devkitpro` or other projects. See [the vendor note](vendor/libogc/README.md).
 
-`make package` creates `dist/WC04-Camera-0.1.2-experimental.zip`. Build outputs and ZIPs are not tracked in Git. `tools/inspect_wc04.py` optionally collects Linux USB descriptors for the WC04 without starting a video stream.
+`make package` creates `dist/WC04-Camera-0.1.3-experimental.zip`. Build outputs and ZIPs are not tracked in Git. `tools/inspect_wc04.py` optionally collects Linux USB descriptors for the WC04 without starting a video stream.
 
 ## Credits and license
 

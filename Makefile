@@ -39,6 +39,8 @@ test: | build
 	./build/test_uvc
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_probe.c -o build/test_probe
 	./build/test_probe
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/iso_queue.c tests/test_iso_queue.c -o build/test_iso_queue
+	./build/test_iso_queue
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/log.c tests/test_log.c -o build/test_log
 	./build/test_log
 
