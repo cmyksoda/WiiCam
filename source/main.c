@@ -231,6 +231,44 @@ static bool read_mode(s32 handle, unsigned width, unsigned height, UvcMode *mode
     return true;
 }
 
+typedef struct {
+    s32 handle;
+    uint8_t interface;
+} ProbeContext;
+
+static int probe_transfer(void *context, uint8_t request, uint16_t selector,
+                          uint8_t data[UVC_PROBE_LENGTH])
+{
+    const ProbeContext *camera = context;
+    const char *operation = request == UVC_SET_CUR ? "SET_CUR" :
+                            request == UVC_GET_MAX ? "GET_MAX" :
+                            request == UVC_GET_DEF ? "GET_DEF" : "GET_CUR";
+    const char *control = selector == UVC_VS_PROBE ? "PROBE" : "COMMIT";
+    report("%s %s (%u payload bytes):\n", operation, control, UVC_PROBE_LENGTH);
+    s32 result;
+    if (request == UVC_SET_CUR) {
+        log_hex(data, UVC_PROBE_LENGTH);
+        result = USB_WriteCtrlMsg(camera->handle, 0x21, request, selector,
+                                  camera->interface, UVC_PROBE_LENGTH, data);
+    } else {
+        result = USB_ReadCtrlMsg(camera->handle, 0xa1, request, selector,
+                                 camera->interface, UVC_PROBE_LENGTH, data);
+    }
+    /* IOS58 counts the eight-byte setup packet in control completions. */
+    int length = result < 8 ? -1 : result - 8;
+    report("%s %s result: %ld; payload count: %d\n", operation, control,
+           (long)result, length);
+    if (request != UVC_SET_CUR && length > 0)
+        log_hex(data, length < UVC_PROBE_LENGTH ? (unsigned)length : UVC_PROBE_LENGTH);
+    if (length == UVC_PROBE_LENGTH) {
+        report("Probe fields: format %u frame %u interval %lu quality %u\n",
+               data[2], data[3], (unsigned long)uvc_le32(data + 4), uvc_le16(data + 12));
+        report("Frame limit %lu, payload limit %lu\n",
+               (unsigned long)uvc_le32(data + 18), (unsigned long)uvc_le32(data + 22));
+    }
+    return length;
+}
+
 static bool negotiate(s32 handle, const UvcMode *mode, UvcAlternate *alt)
 {
     s32 result = WC04_SetAlternate(handle, 0);
@@ -238,33 +276,12 @@ static bool negotiate(s32 handle, const UvcMode *mode, UvcAlternate *alt)
         report("Idle alternate failed: %ld\n", (long)result);
         return false;
     }
-    uvc_probe(probe, mode);
-    result = USB_WriteCtrlMsg(handle, 0x21, 1, 0x0100, mode->interface, 26, probe);
-    report("SET_CUR PROBE: %ld\n", (long)result);
-    if (result < 0)
-        return false;
-    memset(probe, 0, 32);
-    result = USB_ReadCtrlMsg(handle, 0xa1, 0x81, 0x0100, mode->interface, 26, probe);
-    report("GET_CUR PROBE: %ld\n", (long)result);
-    if (result < 26)
-        return false;
-    log_text("GET_CUR PROBE bytes (26 requested):\n");
-    log_hex(probe, 26);
-    uint32_t max_frame = uvc_le32(probe + 18);
-    uint32_t payload = uvc_le32(probe + 22);
-    report("Negotiated interval %lu, frame %lu, payload %lu\n",
-           (unsigned long)uvc_le32(probe + 4), (unsigned long)max_frame,
-           (unsigned long)payload);
-    if (probe[2] != mode->format || probe[3] != mode->frame ||
-        !uvc_le32(probe + 4) || !max_frame || max_frame > sizeof(frame_data) ||
-        !uvc_alternate(mode, payload, alt)) {
-        report("Camera returned unsupported negotiation values.\n");
+    ProbeContext camera = {.handle = handle, .interface = mode->interface};
+    report("Read camera probe seed: GET_MAX, then GET_DEF/GET_CUR if unavailable.\n");
+    if (!uvc_negotiate(mode, alt, probe, probe_transfer, &camera)) {
+        report("Probe/commit failed, short, or returned unsupported values.\n");
         return false;
     }
-    result = USB_WriteCtrlMsg(handle, 0x21, 1, 0x0200, mode->interface, 26, probe);
-    report("SET_CUR COMMIT: %ld\n", (long)result);
-    if (result < 0)
-        return false;
     result = WC04_SetAlternate(handle, alt->number);
     report("Streaming alternate %u, endpoint %02x, capacity %u: %ld\n",
            alt->number, alt->endpoint, alt->capacity, (long)result);
@@ -425,12 +442,15 @@ static bool receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate *a
            stats->empty, stats->header_only, stats->payload_packets, stats->payload_bytes);
     report("Bad headers %u, ERR %u, EOF %u, FID changes %u\n",
            stats->bad_headers, stats->errors, stats->eof, stats->fid_changes);
-    report("Dropped %u: missing EOF %u, invalid JPEG %u; overflow %u\n",
-           frame.dropped, stats->missing_eof, stats->invalid_jpeg, stats->overflow);
+    report("Dropped %u: missing EOF %u, empty frames %u\n",
+           frame.dropped, stats->missing_eof, stats->empty_frames);
+    report("Invalid JPEG %u, overflow %u\n", stats->invalid_jpeg, stats->overflow);
     report("JPEG candidates %u, decode rejected %u, oversized slots %u\n",
            stats->complete, rejected, oversized);
     report("Unfinished frame: %u bytes, discard=%u, ended=%u\n",
            (unsigned)frame.size, frame.discard, frame.ended);
+    if (stats->header_only && !stats->payload_bytes && !stats->bad_headers)
+        report("Only UVC headers received; no image payload reached the decoder.\n");
     /* Defer diagnostic I/O until IOS has returned the capture buffer. */
     if (log_file && batches) {
         report("First batch completion: %ld; packet samples in SD log.\n", (long)first_result);
@@ -554,7 +574,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWC04 Camera 0.1.1 diagnostic - IOS %u\n", IOS_GetVersion());
+    report("\nWC04 Camera 0.1.2 experimental - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report("Hardware capture and Photo Channel playback are unverified.\n");
     bool usb_ready = false;

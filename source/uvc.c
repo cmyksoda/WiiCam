@@ -109,13 +109,44 @@ bool uvc_alternate(const UvcMode *mode, uint32_t payload, UvcAlternate *alt)
     return found;
 }
 
-void uvc_probe(uint8_t data[26], const UvcMode *mode)
+void uvc_probe_select(uint8_t data[UVC_PROBE_LENGTH], const UvcMode *mode)
 {
-    memset(data, 0, 26);
+    /* Preserve camera-provided compression and timing fields. */
     data[0] = 1;
+    data[1] = 0;
     data[2] = mode->format;
     data[3] = mode->frame;
     uvc_put32(data + 4, mode->interval);
+}
+
+bool uvc_negotiate(const UvcMode *mode, UvcAlternate *alt,
+                   uint8_t data[UVC_PROBE_LENGTH], UvcControlTransfer transfer,
+                   void *context)
+{
+    const uint8_t seeds[] = {UVC_GET_MAX, UVC_GET_DEF, UVC_GET_CUR};
+    bool seeded = false;
+    for (size_t i = 0; i < sizeof(seeds); ++i) {
+        memset(data, 0, UVC_PROBE_LENGTH);
+        if (transfer(context, seeds[i], UVC_VS_PROBE, data) == UVC_PROBE_LENGTH) {
+            seeded = true;
+            break;
+        }
+    }
+    if (!seeded)
+        return false;
+    uvc_probe_select(data, mode);
+    if (transfer(context, UVC_SET_CUR, UVC_VS_PROBE, data) != UVC_PROBE_LENGTH)
+        return false;
+    memset(data, 0, UVC_PROBE_LENGTH);
+    if (transfer(context, UVC_GET_CUR, UVC_VS_PROBE, data) != UVC_PROBE_LENGTH)
+        return false;
+    uint32_t max_frame = uvc_le32(data + 18);
+    if (data[2] != mode->format || data[3] != mode->frame ||
+        !uvc_le32(data + 4) || !max_frame || max_frame > WC04_FRAME_CAPACITY ||
+        !uvc_alternate(mode, uvc_le32(data + 22), alt))
+        return false;
+    /* Commit exactly the accepted GET_CUR block, including adjusted fields. */
+    return transfer(context, UVC_SET_CUR, UVC_VS_COMMIT, data) == UVC_PROBE_LENGTH;
 }
 
 void uvc_frame_init(UvcFrame *frame, uint8_t *data, size_t capacity)
@@ -181,8 +212,12 @@ bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length)
         frame->data[1] != 0xd8 || frame->data[frame->size - 2] != 0xff ||
         frame->data[frame->size - 1] != 0xd9) {
         ++frame->dropped;
-        if (!frame->discard)
-            ++frame->stats.invalid_jpeg;
+        if (!frame->discard) {
+            if (!frame->size)
+                ++frame->stats.empty_frames;
+            else
+                ++frame->stats.invalid_jpeg;
+        }
         return false;
     }
     ++frame->stats.complete;

@@ -34,8 +34,8 @@ static void test_descriptors(void)
     assert(uvc_alternate(&mode, 1216, &alt) && alt.number == 1);
     assert(!uvc_alternate(&mode, 1217, &alt));
     assert(!uvc_alternate(&mode, 0, &alt));
-    uint8_t probe[26];
-    uvc_probe(probe, &mode);
+    uint8_t probe[UVC_PROBE_LENGTH] = {0};
+    uvc_probe_select(probe, &mode);
     assert(probe[0] == 1 && probe[2] == 1 && probe[3] == 2);
     assert(uvc_le32(probe + 4) == 333333);
     assert(uvc_le32(probe + 22) == 0);
@@ -163,13 +163,27 @@ static void test_diagnostics(void)
     assert(frame.stats.missing_eof == 1 && frame.dropped == 1);
     const uint8_t empty_end[] = {2, 0x82};
     assert(!uvc_packet(&frame, empty_end, sizeof(empty_end)));
-    assert(frame.stats.invalid_jpeg == 1);
+    assert(frame.stats.invalid_jpeg == 0 && frame.stats.empty_frames == 1);
     const uint8_t bad_timing[] = {2, 0x8f};
     assert(!uvc_packet(&frame, bad_timing, sizeof(bad_timing)));
     assert(frame.stats.bad_headers == 1);
     uvc_frame_init(&frame, buffer, 3);
     assert(!uvc_packet(&frame, complete, sizeof(complete)));
     assert(frame.stats.overflow == 1 && frame.stats.complete == 0);
+
+    /* Recorded headers from 0.1.1 hardware samples: ordinary, EOF, ordinary. */
+    const uint8_t hardware_headers[][12] = {
+        {0x0c, 0x8c, 0xe0, 0xa6, 0xf6, 0x5b, 0xad, 0xee, 0x31, 0x5c, 0x29, 0x03},
+        {0x0c, 0x8f, 0x40, 0xf6, 0x32, 0x5c, 0x59, 0xf6, 0x32, 0x5c, 0x2e, 0x03},
+        {0x0c, 0x8c, 0x40, 0xf6, 0x32, 0x5c, 0xac, 0xfd, 0x32, 0x5c, 0x2e, 0x03}
+    };
+    uvc_frame_init(&frame, buffer, sizeof(buffer));
+    for (unsigned i = 0; i < 3; ++i)
+        assert(!uvc_packet(&frame, hardware_headers[i], 12));
+    assert(frame.stats.header_only == 3 && frame.stats.payload_bytes == 0);
+    assert(frame.stats.bad_headers == 0 && frame.stats.errors == 0);
+    assert(frame.stats.empty_frames == 1 && frame.stats.invalid_jpeg == 0);
+    assert(frame.stats.fid_changes == 2 && frame.stats.complete == 0);
 }
 
 static uint32_t random_state = 0x57433034;

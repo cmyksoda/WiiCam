@@ -37,6 +37,8 @@ JPEG_LIBS ?= -ljpeg
 test: | build
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_uvc.c -o build/test_uvc
 	./build/test_uvc
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_probe.c -o build/test_probe
+	./build/test_probe
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/log.c tests/test_log.c -o build/test_log
 	./build/test_log
 

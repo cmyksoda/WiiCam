@@ -2,7 +2,7 @@
 <app version="1">
   <name>WC04 Camera (experimental)</name>
   <coder>cmyksoda</coder>
-  <version>0.1.1-diagnostic</version>
+  <version>0.1.2-experimental</version>
   <short_description>Ubisoft WC04 photo capture prototype</short_description>
-  <long_description>Diagnostic UVC photo capture build for the 057e:030a WC04 camera. Requires IOS58 and writable SD. A captures, 1 selects 320x240 or 640x480, 2 scans, HOME exits. Adds timestamped logs, explicit capture-stop reasons, and packet diagnostics. Discovery and stream activation have been reported on Wii; successful photo capture remains unverified. No live viewfinder. If cancellation waits for USB, unplug the camera to release the transfer.</long_description>
+  <long_description>Experimental UVC photo capture for the 057e:030a WC04 camera. Requires IOS58 and writable SD. A captures, 1 selects 320x240 or 640x480, 2 scans, HOME exits. This version initializes stream negotiation from camera-provided parameters and retains timestamped packet diagnostics. Earlier testing received headers without image payload; successful photo capture remains unverified. No live viewfinder. If cancellation waits for USB, unplug the camera to release the transfer.</long_description>
 </app>

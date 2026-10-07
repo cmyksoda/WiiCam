@@ -2,7 +2,7 @@
 
 An **experimental Wii photo-capture prototype** for the Ubisoft / Hercules WC04 USB camera, based on [ZodiaKGalXy's GBAtemp request](https://gbatemp.net/threads/homebrew-application-for-ubisoft-hercules-wc04-webcam.683135/).
 
-**Status:** physical Wii testing of 0.1.0 confirmed discovery and stream activation under IOS58, but **no photograph was saved**. Version **0.1.1-diagnostic** adds timestamps, explicit stop reasons, and packet diagnostics. Wii compilation and host tests pass; successful photo capture and Photo Channel playback remain unverified.
+**Status:** physical Wii testing of 0.1.1 received valid UVC headers but **no image payload** at either resolution. Version **0.1.2-experimental** initializes negotiation from camera-provided parameters and logs the full probe/commit exchange. Wii compilation and host tests pass; successful photo capture and Photo Channel playback remain unverified.
 
 ## What is implemented
 
@@ -49,9 +49,17 @@ make package
 
 `DEVKITPRO` defaults to `/opt/devkitpro`; override it if necessary. `HOST_CC`, `JPEG_CFLAGS`, and `JPEG_LIBS` configure the host tests. The host's test JPEG library is separate from the library linked into the Wii binary.
 
+Negotiation reads a 26-byte UVC 1.0 probe block using `GET_MAX`, with
+`GET_DEF` and `GET_CUR` fallbacks. It preserves the returned compression and
+timing fields while selecting the requested format, frame, and interval,
+following [libuvc's initialization approach](https://github.com/libuvc/libuvc/blob/d07de4fa23905ee8cac06f5d24b2a03d42a3b363/src/stream.c).
+Only a complete, validated `GET_CUR` response is committed. This is a
+compatibility change to test; receiving headers alone does not establish
+which camera or host behavior prevents image delivery.
+
 The build uses a pinned copy of libogc's USB implementation with two added functions. It does **not** modify `/opt/devkitpro` or other projects. See [the vendor note](vendor/libogc/README.md).
 
-`make package` creates `dist/WC04-Camera-0.1.1-diagnostic.zip`. Build outputs and ZIPs are not tracked in Git. `tools/inspect_wc04.py` optionally collects Linux USB descriptors for the WC04 without starting a video stream.
+`make package` creates `dist/WC04-Camera-0.1.2-experimental.zip`. Build outputs and ZIPs are not tracked in Git. `tools/inspect_wc04.py` optionally collects Linux USB descriptors for the WC04 without starting a video stream.
 
 ## Credits and license
 

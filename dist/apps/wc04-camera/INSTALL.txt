@@ -1,8 +1,10 @@
-WC04 Camera 0.1.1 - DIAGNOSTIC / EXPERIMENTAL
+WC04 Camera 0.1.2 - EXPERIMENTAL
 
-Compiled and host-tested. The previous build discovered the WC04, negotiated
-a stream, and activated the blue light on a tester's Wii, but saved no photo.
-This build adds diagnostics; it is not a confirmed capture fix.
+Compiled and host-tested. The previous build received valid UVC headers but
+no image payload at either resolution. This version initializes negotiation
+from camera-provided parameters instead of zeroing all probe fields.
+GET_MAX is tried first, then GET_DEF and GET_CUR if needed. All exchanges
+are logged. This is a candidate compatibility fix, pending hardware testing.
 Successful photo capture and Photo Channel playback remain unverified.
 
 Copy apps/wc04-camera to the SD root's apps directory. Requires a WC04
@@ -23,10 +25,13 @@ The Wii clock may be inaccurate; elapsed time does not depend on it.
 Timeout, B, and exit requests are identified separately. A USB completion
 after a stop request is recorded separately from an earlier USB failure.
 
+Reconnect the camera before launching this build to start a fresh test.
 Please test A at the default 320x240 without pressing B (up to 10 seconds),
 then test 640x480. Finally try B during a separate capture. Exit normally
 and return session.log with the steps taken and any saved test photo.
 Packet samples are written after capture, avoiding SD writes in reception.
+If both resolutions still receive only headers, please also report whether
+this camera produces a live picture on a computer with a standard webcam app.
 
 There is no live viewfinder. Photographs are re-encoded as baseline JPEGs.
 After exiting, try viewing them through the Photo Channel's SD-card option.
