@@ -37,7 +37,7 @@ static void render(unsigned width, unsigned height, unsigned stride, bool wide,
                 rgb[((size_t)y * image_width + x) * 3 + c] = bars[x * 8 / image_width][c];
     Screen screen = {allocation + 1, width, height, stride, wide};
     screen_draw(&screen, page, page == SCREEN_MENU ? NULL : rgb,
-                 image_width, image_height, "FRAME YOUR SHOT", true);
+                 image_width, image_height, "", true);
     assert(allocation[0] == 0xdeadbeef && allocation[words + 1] == 0xdeadbeef);
     for (unsigned y = 0; y < height; ++y)
         for (unsigned x = width; x < stride; x += 2)

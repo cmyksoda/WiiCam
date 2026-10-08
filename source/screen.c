@@ -3,7 +3,6 @@
  */
 #include "screen.h"
 #include <stddef.h>
-#include <stdio.h>
 #include <string.h>
 
 uint32_t screen_pair(const uint8_t a[3], const uint8_t b[3])
@@ -102,11 +101,7 @@ void screen_draw(Screen *s, ScreenPage page, const uint8_t *rgb,
 {
     const unsigned ink = 0xeaf2f4, muted = 0x9eaeb7, accent = 0x77e1cb;
     box(s, 0, 0, 640, 480, 0x101a23);
-    box(s, 24, 24, 4, 18, accent);
-    text(s, 40, 26, "WC04 CAMERA", ink);
-    char resolution[24];
-    snprintf(resolution, sizeof(resolution), "%u X %u", width, height);
-    text(s, 488, 26, resolution, muted);
+    text(s, 254, 26, "WC04 CAMERA", ink);
     unsigned view_width = s->widescreen ? 324 : 432;
     unsigned left = (640 - view_width) / 2;
     box(s, left - 2, 64, view_width + 4, 328, 0x33444e);

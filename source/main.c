@@ -375,7 +375,7 @@ static void *preview_worker(void *context)
                 (unsigned)ticks_to_millisecs(now - capture->start), memory_order_release);
             if (!capture->preview.save && (!last_draw || ticks_to_millisecs(now - last_draw) >= 66)) {
                 draw_screen(SCREEN_LIVE, rgb, capture->mode->width, capture->mode->height,
-                            mounted ? "FRAME YOUR SHOT" : "INSERT SD AND RESTART TO SAVE");
+                            mounted ? "" : "INSERT SD AND RESTART TO SAVE");
                 last_draw = now;
                 ++capture->displayed;
             }
