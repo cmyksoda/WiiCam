@@ -10,7 +10,7 @@ Copy apps/wc04-camera to the SD root's apps directory. Requires a WC04
 SD before launch to save photos. Without SD, the viewfinder still works.
 The app does not install or reload IOS and does not write to NAND.
 
-Menu: A opens the viewfinder, 1 changes resolution, 2 scans the camera.
+Menu: A/B opens the viewfinder, 1 changes resolution, 2 checks the camera connection.
 Live view: A takes a photo, B returns to the menu.
 Photo review: A returns to live view, B returns to the menu.
 HOME exits from any screen.

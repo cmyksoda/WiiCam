@@ -685,8 +685,8 @@ int main(void)
             height = width == 320 ? 240 : 480;
             menu = true;
         }
-        if (usb_ready && (open_live || (down & (WPAD_BUTTON_A | WPAD_BUTTON_2)))) {
-            bool scanning = !open_live && !(down & WPAD_BUTTON_A);
+        if (usb_ready && (open_live || (down & (WPAD_BUTTON_A | WPAD_BUTTON_B | WPAD_BUTTON_2)))) {
+            bool scanning = !open_live && !(down & (WPAD_BUTTON_A | WPAD_BUTTON_B));
             open_live = false;
             draw_screen(SCREEN_WAITING, NULL, width, height, "CONNECTING CAMERA");
             s32 handle;

@@ -21,9 +21,9 @@ It does not implement motion tracking, audio, movie recording, YUY2 capture, arb
 
 1. Copy `dist/apps/wc04-camera` to the SD card's `apps` directory, or extract the experimental ZIP to the SD root.
 2. Connect the WC04 directly to a Wii USB port and insert a writable FAT-formatted SD card.
-3. Launch the app from the Homebrew Channel under **IOS58**. The app prints the running IOS and refuses camera operations under other versions. It never installs or reloads an IOS.
+3. Launch the app from the Homebrew Channel under **IOS58**. The app logs the running IOS and refuses camera operations under other versions. It never installs or reloads an IOS.
 4. Press **A** to open the viewfinder, then **A** again to take a photo. **B** returns to the menu; **HOME** exits.
-5. In the menu, **1** switches between 320×240 and 640×480. **2** scans and records descriptors.
+5. In the menu, **A/B** opens the viewfinder, **1** switches between 320×240 and 640×480. **2 / CAMERA CHECK** checks the connection and records supported camera modes in the log; it does not take a photo.
 6. A saved photo appears immediately. **A** reopens the live viewfinder; **B** returns to the menu.
 
 Photos: `sd:/DCIM/100WC04/WC04####.JPG`. Existing files are never overwritten. The 9999-file directory limit follows the chosen four-digit filename scheme; move photos elsewhere when it fills.

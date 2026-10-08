@@ -3,6 +3,7 @@
  */
 #include "screen.h"
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 uint32_t screen_pair(const uint8_t a[3], const uint8_t b[3])
@@ -78,6 +79,50 @@ static void text(Screen *s, unsigned x, unsigned y, const char *message, unsigne
     }
 }
 
+static void camera_icon(Screen *s)
+{
+    static const char pixels[][25] = {
+        "                        ",
+        "        WWWWWWWW        ",
+        "      WWWWWWWWWWWS      ",
+        "     WWWWWWWWWWWWSS     ",
+        "     WWWWWWWWWWWWSS     ",
+        "    WWWWWWWWWWWWWSSS    ",
+        "    WWWWWWBBBBWWWSSS    ",
+        "    WWWWWBBLLBBWWSSS    ",
+        "   WWWWWBBGGLLBBWSSSS   ",
+        "    WWWWBLLLLLLBWSSS    ",
+        "    WWWBBLLLLLLBBSSS    ",
+        "    WWWWBLLLLLLBWSSS    ",
+        "     WWWBBLLLLBBWSS     ",
+        "     WWWWBBLLBBWWSS     ",
+        "      WWWWBBBBWWWS      ",
+        "        SSSSSSSS        ",
+        "         WWWWSS         ",
+        "         WWWWSS         ",
+        "         WWWWSS         ",
+        "     WWWWWWWWWWWWWW     ",
+        "   WWWWWWWWWWWWWWWWWW   ",
+        "  WWWWWWWBBBBBBWWWWWWW  ",
+        "   SSSSSSSSSSSSSSSSSS   ",
+        "     SSSSSSSSSSSSSS     ",
+    };
+    for (unsigned y = 0; y < 24; ++y) {
+        for (unsigned x = 0; x < 24; ++x) {
+            unsigned rgb;
+            switch (pixels[y][x]) {
+            case 'W': rgb = 0xf5f2f7; break;
+            case 'S': rgb = 0xaaa6b5; break;
+            case 'B': rgb = 0x303238; break;
+            case 'L': rgb = 0x07090d; break;
+            case 'G': rgb = 0x80858d; break;
+            default: continue;
+            }
+            box(s, 272 + x * 4, 168 + y * 4, 4, 4, rgb);
+        }
+    }
+}
+
 static void photo(Screen *s, const uint8_t *rgb, unsigned width, unsigned height,
                   unsigned left, unsigned view_width)
 {
@@ -99,46 +144,41 @@ static void photo(Screen *s, const uint8_t *rgb, unsigned width, unsigned height
 void screen_draw(Screen *s, ScreenPage page, const uint8_t *rgb,
                  unsigned width, unsigned height, const char *status, bool sd)
 {
-    const unsigned ink = 0xeaf2f4, muted = 0x9eaeb7, accent = 0x77e1cb;
-    box(s, 0, 0, 640, 480, 0x101a23);
+    const unsigned ink = 0xf5f2f7, muted = 0xb6b0bf;
+    const unsigned cyan = 0x25d9f0, magenta = 0xff5bb5, yellow = 0xffe06b;
+    const unsigned background = 0x15141b, well = 0x09090d, border = 0x36333f;
+    box(s, 0, 0, 640, 480, background);
     text(s, 254, 26, "WC04 CAMERA", ink);
     unsigned view_width = s->widescreen ? 324 : 432;
     unsigned left = (640 - view_width) / 2;
-    box(s, left - 2, 64, view_width + 4, 328, 0x33444e);
-    box(s, left, 66, view_width, 324, 0x080e14);
+    box(s, left - 2, 64, view_width + 4, 328, border);
+    box(s, left, 66, view_width, 324, well);
     if (rgb && width && height)
         photo(s, rgb, width, height, left, view_width);
     else {
-        box(s, 282, 190, 76, 54, 0x33444e);
-        box(s, 294, 180, 26, 10, accent);
-        box(s, 306, 200, 28, 34, accent);
-        box(s, 312, 206, 16, 22, 0x080e14);
+        camera_icon(s);
         const char *label = page == SCREEN_MENU ? "READY WHEN YOU ARE" : "CONNECTING CAMERA";
         text(s, 320 - (unsigned)strlen(label) * 6, 274, label, muted);
-    }
-    if (page == SCREEN_LIVE) {
-        box(s, left + 12, 78, 72, 26, 0x101a23);
-        text(s, left + 24, 84, "LIVE", accent);
-        /* Corner guides leave the photograph itself unobstructed. */
-        for (unsigned i = 0; i < 2; ++i) {
-            unsigned x = i ? left + view_width - 20 : left + 12;
-            box(s, x, 362, 8, 2, ink);
-            box(s, i ? x + 6 : x, 354, 2, 10, ink);
+        if (page == SCREEN_MENU) {
+            char size[32];
+            snprintf(size, sizeof(size), "1 - SIZE %u X %u", width, height);
+            text(s, 320 - (unsigned)strlen(size) * 6, 312, size, yellow);
+            text(s, 224, 340, "2 - CAMERA CHECK", muted);
         }
     }
-    text(s, 320 - (unsigned)(strlen(status) > 48 ? 48 : strlen(status)) * 6,
-         406, status, page == SCREEN_REVIEW ? accent : muted);
-    box(s, 24, 434, 592, 2, 0x33444e);
-    if (page == SCREEN_MENU) {
-        text(s, 28, 450, "A OPEN", accent);
-        text(s, 154, 450, "1 SIZE", ink);
-        text(s, 276, 450, "2 SCAN", ink);
-    } else if (page == SCREEN_REVIEW) {
-        text(s, 28, 450, "A LIVE", accent);
-        text(s, 168, 450, "B MENU", ink);
-    } else {
-        text(s, 28, 450, sd ? "A PHOTO" : "NO SD", accent);
-        text(s, 168, 450, "B MENU", ink);
+    if (page == SCREEN_LIVE) {
+        box(s, left + 12, 78, 72, 26, background);
+        text(s, left + 24, 84, "LIVE", yellow);
     }
-    text(s, 508, 450, "HOME EXIT", muted);
+    text(s, 320 - (unsigned)(strlen(status) > 48 ? 48 : strlen(status)) * 6,
+         400, status, page == SCREEN_REVIEW ? cyan : muted);
+    box(s, 48, 422, 544, 2, border);
+    if (page == SCREEN_REVIEW) {
+        text(s, 48, 432, "A - LIVE", cyan);
+        text(s, 498, 432, "B - MENU", magenta);
+    } else if (page != SCREEN_MENU) {
+        text(s, 48, 432, sd ? "A - PHOTO" : "NO SD", cyan);
+        text(s, 498, 432, "B - MENU", magenta);
+    }
+    text(s, 254, 432, "HOME - EXIT", muted);
 }
