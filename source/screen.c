@@ -79,7 +79,7 @@ static void text(Screen *s, unsigned x, unsigned y, const char *message, unsigne
     }
 }
 
-static void camera_icon(Screen *s)
+static void camera_icon(Screen *s, unsigned top)
 {
     static const char pixels[][25] = {
         "                        ",
@@ -118,7 +118,7 @@ static void camera_icon(Screen *s)
             case 'G': rgb = 0x80858d; break;
             default: continue;
             }
-            box(s, 272 + x * 4, 168 + y * 4, 4, 4, rgb);
+            box(s, 272 + x * 4, top + y * 4, 4, 4, rgb);
         }
     }
 }
@@ -156,14 +156,15 @@ void screen_draw(Screen *s, ScreenPage page, const uint8_t *rgb,
     if (rgb && width && height)
         photo(s, rgb, width, height, left, view_width);
     else {
-        camera_icon(s);
+        camera_icon(s, page == SCREEN_MENU ? 132 : 168);
         const char *label = page == SCREEN_MENU ? "READY WHEN YOU ARE" : "CONNECTING CAMERA";
-        text(s, 320 - (unsigned)strlen(label) * 6, 274, label, muted);
+        text(s, 320 - (unsigned)strlen(label) * 6,
+             page == SCREEN_MENU ? 238 : 274, label, muted);
         if (page == SCREEN_MENU) {
             char size[32];
             snprintf(size, sizeof(size), "1 - SIZE %u X %u", width, height);
-            text(s, 320 - (unsigned)strlen(size) * 6, 312, size, yellow);
-            text(s, 224, 340, "2 - CAMERA CHECK", muted);
+            text(s, 320 - (unsigned)strlen(size) * 6, 276, size, yellow);
+            text(s, 224, 304, "2 - CAMERA CHECK", muted);
         }
     }
     if (page == SCREEN_LIVE) {
