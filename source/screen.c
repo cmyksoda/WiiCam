@@ -101,11 +101,11 @@ static void camera_icon(Screen *s)
         "         WWWWSS         ",
         "         WWWWSS         ",
         "         WWWWSS         ",
-        "     WWWWWWWWWWWWWW     ",
-        "   WWWWWWWWWWWWWWWWWW   ",
-        "  WWWWWWWBBBBBBWWWWWWW  ",
+        "   WWWWWWWWWWWWWWWWWS   ",
+        "   WWWWWWWWWWWWWWWWWS   ",
+        "   WWWWWWBBBBBBWWWWWS   ",
         "   SSSSSSSSSSSSSSSSSS   ",
-        "     SSSSSSSSSSSSSS     ",
+        "   SSSSSSSSSSSSSSSSSS   ",
     };
     for (unsigned y = 0; y < 24; ++y) {
         for (unsigned x = 0; x < 24; ++x) {
