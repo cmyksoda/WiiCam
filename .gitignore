@@ -16,3 +16,7 @@ CLAUDE.md
 .codex/
 .claude/
 .agents/
+
+# Keep agent notes and Markdown drafts local until rewritten.
+/project-notes/
+*.md

@@ -18,6 +18,7 @@
 typedef enum {
     ISO_RUNNING,
     ISO_PHOTO_READY,
+    ISO_RECORD_STOPPED,
     ISO_CANCELLED,
     ISO_EXIT,
     ISO_TIMEOUT,

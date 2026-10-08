@@ -24,6 +24,9 @@
 #include "iso_queue.h"
 #include "screen.h"
 #include "preview.h"
+#include "capture_control.h"
+#include "recorder.h"
+#include "storage.h"
 
 #define FRAME_TIMEOUT_SECONDS 10
 #define CONFIG_CAPACITY 4096
@@ -34,6 +37,7 @@ static uint8_t *iso_data;
 static uint16_t *iso_sizes;
 static uint8_t frame_data[WC04_FRAME_CAPACITY];
 static uint8_t rgb[640 * 480 * 3];
+static uint8_t decode_rgb[640 * 480 * 3];
 static volatile bool exit_requested;
 static bool mounted;
 static FILE *log_file;
@@ -44,18 +48,20 @@ static bool widescreen;
 static uint8_t preview_jpeg[WC04_FRAME_CAPACITY];
 static uint8_t worker_stack[64 * 1024] ATTRIBUTE_ALIGN(32);
 static GXRModeObj *video;
+static ScreenInfo screen_info;
+static Recorder recording;
 
 s32 WC04_SetAlternate(s32 device_id, u8 alternate);
 s32 WC04_CancelIso(s32 device_id, u8 endpoint);
 
-static void draw_screen(ScreenPage page, const uint8_t *pixels,
-                         unsigned width, unsigned height, const char *status)
+static void draw_screen_info(ScreenPage page, const uint8_t *pixels,
+                             unsigned width, unsigned height, const ScreenInfo *info)
 {
     Screen screen = {
         .pixels = xfb[back_buffer], .width = video->fbWidth, .height = video->xfbHeight,
         .stride = VIDEO_PadFramebufferWidth(video->fbWidth), .widescreen = widescreen
     };
-    screen_draw(&screen, page, pixels, width, height, status, mounted);
+    screen_draw(&screen, page, pixels, width, height, info);
     DCFlushRange(xfb[back_buffer], VIDEO_GetFrameBufferSize(video));
     VIDEO_SetNextFramebuffer(xfb[back_buffer]);
     VIDEO_Flush();
@@ -64,6 +70,15 @@ static void draw_screen(ScreenPage page, const uint8_t *pixels,
         VIDEO_WaitVSync();
     } while (VIDEO_GetCurrentFramebuffer() != xfb[back_buffer]);
     back_buffer ^= 1;
+}
+
+static void draw_screen(ScreenPage page, const uint8_t *pixels,
+                        unsigned width, unsigned height, const char *status)
+{
+    ScreenInfo info = screen_info;
+    info.sd = mounted;
+    info.status = status;
+    draw_screen_info(page, pixels, width, height, &info);
 }
 
 static bool allocate_usb_buffers(void)
@@ -348,41 +363,85 @@ typedef struct {
     lwp_t worker;
     uint64_t last_input;
     unsigned decoded, skipped, displayed, first_decoded_ms, shutter_ms;
-    uint64_t max_decode_time;
+    uint64_t max_decode_time, max_video_write_time;
+    CaptureControl control;
+    atomic_uint countdown;
+    RecordControl record_control;
+    bool video_mode;
 } Capture;
+
 
 static void *preview_worker(void *context)
 {
     Capture *capture = context;
     uint64_t last_draw = 0;
     while (!atomic_load_explicit(&capture->worker_stop, memory_order_acquire)) {
-        if (!preview_take(&capture->preview)) {
-            usleep(1000);
-            continue;
+        bool have_frame = preview_take(&capture->preview);
+        if (have_frame) {
+            uint64_t decode_start = gettime();
+            bool decoded = photo_decode(capture->preview.jpeg, capture->preview.length,
+                                        decode_rgb, capture->mode->width, capture->mode->height);
+            uint64_t decode_time = gettime()-decode_start;
+            if (decode_time > capture->max_decode_time)
+                capture->max_decode_time = decode_time;
+            if (decoded) {
+                memcpy(rgb, decode_rgb, (size_t)capture->mode->width*capture->mode->height*3);
+                ++capture->decoded;
+                unsigned elapsed = (unsigned)ticks_to_millisecs(gettime()-capture->start);
+                if (capture->decoded == 1)
+                    capture->first_decoded_ms = elapsed;
+                atomic_store_explicit(&capture->last_decoded_ms, elapsed, memory_order_release);
+                uint64_t write_start = gettime();
+                unsigned state = atomic_load_explicit(&capture->record_control.state, memory_order_acquire);
+                if (record_control_begin(&capture->record_control)) {
+                    bool ready = ensure_directory("sd:/wc04-camera/videos") &&
+                        recorder_start(&recording, "sd:/wc04-camera/videos",
+                                       capture->mode->width, capture->mode->height, elapsed);
+                    if (!ready)
+                        recording.failed = true;
+                    record_control_started(&capture->record_control, ready, elapsed);
+                    state = atomic_load(&capture->record_control.state);
+                }
+                if (state == RECORD_ACTIVE &&
+                    !recorder_frame(&recording, capture->preview.jpeg, capture->preview.length, elapsed))
+                    record_control_result(&capture->record_control,
+                                          recording.limited ? RECORD_LIMIT : RECORD_FAILED);
+                uint64_t write_time = gettime()-write_start;
+                if (state != RECORD_READY && write_time > capture->max_video_write_time)
+                    capture->max_video_write_time = write_time;
+            } else
+                ++capture->rejected;
+            preview_finish(&capture->preview, decoded);
         }
-        uint64_t decode_start = gettime();
-        bool decoded = photo_decode(capture->preview.jpeg, capture->preview.length,
-                                     rgb, capture->mode->width, capture->mode->height);
-        uint64_t decode_time = gettime() - decode_start;
-        if (decode_time > capture->max_decode_time)
-            capture->max_decode_time = decode_time;
-        if (decoded) {
-            ++capture->decoded;
-            uint64_t now = gettime();
-            if (capture->decoded == 1)
-                capture->first_decoded_ms = (unsigned)ticks_to_millisecs(now - capture->start);
-            atomic_store_explicit(&capture->last_decoded_ms,
-                (unsigned)ticks_to_millisecs(now - capture->start), memory_order_release);
-            if (!capture->preview.save && (!last_draw || ticks_to_millisecs(now - last_draw) >= 66)) {
-                draw_screen(SCREEN_LIVE, rgb, capture->mode->width, capture->mode->height,
-                            mounted ? "" : "INSERT SD AND RESTART TO SAVE");
-                last_draw = now;
-                ++capture->displayed;
-            }
-        } else
-            ++capture->rejected;
-        preview_finish(&capture->preview, decoded);
+        if (atomic_load_explicit(&capture->worker_stop, memory_order_acquire))
+            break;
+        uint64_t now = gettime();
+        if (!last_draw || ticks_to_millisecs(now-last_draw) >= 66) {
+            unsigned elapsed = (unsigned)ticks_to_millisecs(now-capture->start);
+            unsigned last = atomic_load(&capture->last_decoded_ms);
+            unsigned age = elapsed >= last ? elapsed-last : 0;
+            bool signal = last && age < 1000;
+            ScreenInfo info = screen_info;
+            info.sd = mounted;
+            info.status = "";
+            info.countdown = atomic_load(&capture->countdown);
+            info.shutter = atomic_load(&capture->preview.shutter);
+            unsigned state = atomic_load(&capture->record_control.state);
+            info.recording = state == RECORD_ACTIVE;
+            info.seconds = info.recording ? (elapsed-atomic_load(&capture->record_control.started_ms))/1000 : 0;
+            if (state == RECORD_REQUESTED || state == RECORD_STARTING)
+                info.status = "Starting video...";
+            draw_screen_info(signal ? SCREEN_LIVE : SCREEN_NO_SIGNAL, signal ? rgb : NULL,
+                             capture->mode->width, capture->mode->height, &info);
+            last_draw = now;
+            ++capture->displayed;
+        }
+        if (!have_frame)
+            usleep(1000);
     }
+    /* Only this worker writes the video; finalize before its join returns. */
+    if (recording.active)
+        recorder_stop(&recording, atomic_load(&capture->record_control.stopped_ms));
     return NULL;
 }
 
@@ -390,6 +449,7 @@ static const char *stop_description(IsoStop stop)
 {
     switch (stop) {
     case ISO_PHOTO_READY: return "shutter photo decoded";
+    case ISO_RECORD_STOPPED: return "video stopped or limit/write failure";
     case ISO_CANCELLED: return "B pressed";
     case ISO_EXIT: return "HOME/power/reset exit requested";
     case ISO_TIMEOUT: return "no decoded frame for 10 seconds";
@@ -408,19 +468,44 @@ static IsoStop poll_capture(void *context)
         down = buttons();
         capture->last_input = now;
     }
-    if (exit_requested)
-        return ISO_EXIT;
-    if (down & WPAD_BUTTON_B)
-        return ISO_CANCELLED;
-    if (mounted && (down & WPAD_BUTTON_A) && !atomic_load(&capture->preview.shutter)) {
-        capture->shutter_ms = (unsigned)ticks_to_millisecs(now - capture->start);
-        preview_shutter(&capture->preview);
-    }
-    if (preview_photo_ready(&capture->preview))
-        return ISO_PHOTO_READY;
+    unsigned elapsed = (unsigned)ticks_to_millisecs(now-capture->start);
     unsigned last = atomic_load_explicit(&capture->last_decoded_ms, memory_order_acquire);
-    unsigned elapsed = (unsigned)ticks_to_millisecs(gettime() - capture->start);
-    if (elapsed - last >= FRAME_TIMEOUT_SECONDS * 1000)
+    unsigned age = elapsed >= last ? elapsed-last : 0;
+    bool signal = last && age < 1000;
+    if (capture->video_mode) {
+        if (exit_requested)
+            return ISO_EXIT;
+        if (down & WPAD_BUTTON_B)
+            return ISO_CANCELLED;
+        unsigned state = atomic_load(&capture->record_control.state);
+        unsigned started = atomic_load(&capture->record_control.started_ms);
+        if (state == RECORD_FAILED || state == RECORD_LIMIT ||
+            (state == RECORD_ACTIVE && elapsed >= started && elapsed-started >= AVI_MAX_MS))
+            return ISO_RECORD_STOPPED;
+        if (down & WPAD_BUTTON_A) {
+            if (state != RECORD_READY)
+                return ISO_RECORD_STOPPED;
+            if (mounted && signal)
+                record_control_request(&capture->record_control);
+        }
+    } else {
+        CaptureAction action = capture_control_update(&capture->control, elapsed,
+            down & WPAD_BUTTON_A, down & WPAD_BUTTON_B, exit_requested, signal, mounted);
+        atomic_store(&capture->countdown, capture->control.remaining);
+        if (action == CONTROL_EXIT)
+            return ISO_EXIT;
+        if (action == CONTROL_SIGNAL_LOST)
+            return ISO_TIMEOUT;
+        if (action == CONTROL_BACK)
+            return ISO_CANCELLED;
+        if (action == CONTROL_PHOTO) {
+            capture->shutter_ms = elapsed;
+            preview_shutter(&capture->preview);
+        }
+        if (preview_photo_ready(&capture->preview))
+            return ISO_PHOTO_READY;
+    }
+    if (age >= FRAME_TIMEOUT_SECONDS*1000)
         return ISO_TIMEOUT;
     return ISO_RUNNING;
 }
@@ -434,10 +519,12 @@ static void idle_capture(void *context)
 static void stopping_capture(void *context, IsoStop reason, int failure)
 {
     Capture *capture = context;
+    record_control_stop(&capture->record_control,
+                        (unsigned)ticks_to_millisecs(gettime()-capture->start));
     atomic_store_explicit(&capture->worker_stop, true, memory_order_release);
     LWP_JoinThread(capture->worker, NULL);
     draw_screen(SCREEN_WAITING, reason == ISO_PHOTO_READY ? rgb : NULL,
-                capture->mode->width, capture->mode->height, "STOPPING CAMERA");
+                capture->mode->width, capture->mode->height, capture->video_mode ? "Stopping camera / saving video" : "Stopping camera");
     report("Capture stop requested: %s.\n", stop_description(reason));
     if (reason == ISO_SUBMIT_FAILED || reason == ISO_COMPLETION_FAILED)
         report("USB failure result: %d\n", failure);
@@ -447,7 +534,7 @@ static void cancel_capture(void *context)
 {
     const Capture *capture = context;
     draw_screen(SCREEN_WAITING, NULL, capture->mode->width, capture->mode->height,
-                "IF STUCK HERE UNPLUG CAMERA");
+                "If stuck here, unplug camera");
     s32 result = WC04_CancelIso(capture->handle, capture->alt->endpoint);
     report("Cancel endpoint: %ld. Waiting for all queued USB completions.\n", (long)result);
     report("If stuck, unplug camera.\n");
@@ -523,7 +610,8 @@ static bool consume_capture(void *context, const IsoSlot *slot)
 static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate *alt)
 {
     Capture capture = {
-        .handle = handle, .mode = mode, .alt = alt, .min_length = ISO_MAX_PAYLOAD
+        .handle = handle, .mode = mode, .alt = alt, .min_length = ISO_MAX_PAYLOAD,
+        .video_mode = screen_info.video
     };
     uvc_frame_init(&capture.frame, frame_data, sizeof(frame_data));
     IsoQueue queue;
@@ -532,11 +620,15 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
         .submit = submit_capture, .consume = consume_capture, .poll = poll_capture,
         .idle = idle_capture, .stopping = stopping_capture, .cancel = cancel_capture
     };
-    report("Viewfinder with %u queued batches of %u slots. A takes photo, B stops, HOME exits.\n",
+    report("Viewfinder with %u queued batches of %u slots. A captures/records, B stops, HOME exits.\n",
            ISO_QUEUE_DEPTH, ISO_PACKETS);
     preview_init(&capture.preview, preview_jpeg, sizeof(preview_jpeg));
     atomic_init(&capture.worker_stop, false);
     atomic_init(&capture.last_decoded_ms, 0);
+    atomic_init(&capture.countdown, 0);
+    record_control_init(&capture.record_control);
+    capture_control_init(&capture.control, screen_info.timer);
+    recorder_init(&recording);
     draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height, "WAITING FOR FIRST FRAME");
     capture.start = gettime();
     if (LWP_CreateThread(&capture.worker, preview_worker, &capture, worker_stack,
@@ -595,6 +687,18 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
            (unsigned long long)ticks_to_microsecs(capture.max_decode_time));
     if (atomic_load(&capture.preview.shutter))
         report("Shutter pressed at viewfinder +%u ms\n", capture.shutter_ms);
+    if (capture.video_mode) {
+        report("Longest video create/write %llu us; busy preview frames skipped %u\n",
+               (unsigned long long)ticks_to_microsecs(capture.max_video_write_time), capture.skipped);
+        report("Video frames %u, bytes %u, duration %u ms, saved=%u, failed=%u, limit=%u\n",
+               recording.avi.frames, recording.avi.bytes, recording.duration_ms,
+               recording.saved, recording.failed, recording.limited);
+        if (recording.saved)
+            report("Video saved: %s; sampled average rate %.2f fps (not a camera rate guarantee).\n",
+                   recording.path, recording.avi.frames*1000.0/recording.duration_ms);
+        else if (recording.failed)
+            report("Video SD creation/write failed. No completed clip.\n");
+    }
     return stop;
 }
 
@@ -605,36 +709,14 @@ static bool save_photo(unsigned width, unsigned height, char path[80])
         report("SD photo directory unavailable.\n");
         return false;
     }
-    int fd = -1;
-    for (unsigned number = 1; number <= 9999; ++number) {
-        snprintf(path, 80, "sd:/DCIM/100WC04/WC04%04u.JPG", number);
-        fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
-        if (fd >= 0)
-            break;
-        if (errno != EEXIST) {
-            report("Photo creation failed: %s\n", strerror(errno));
-            return false;
-        }
-    }
-    if (fd < 0) {
-        report("100WC04 is full (9999 photos).\n");
-        return false;
-    }
-    FILE *file = fdopen(fd, "wb");
+    FILE *file = storage_create("sd:/DCIM/100WC04", "WC04", "JPG", path, 80);
     if (!file) {
-        close(fd);
-        unlink(path);
+        report("Photo creation failed: %s\n", strerror(errno));
         return false;
     }
-    bool ok = photo_encode(file, rgb, width, height);
-    if (fflush(file) != 0)
-        ok = false;
-    if (fclose(file) != 0)
-        ok = false;
-    if (!ok) {
-        unlink(path);
-        report("JPEG write failed; incomplete file removed.\n");
-    }
+    bool ok = storage_finish(file, path, photo_encode(file, rgb, width, height));
+    if (!ok)
+        report("JPEG write failed; incomplete-file cleanup attempted.\n");
     return ok;
 }
 
@@ -659,7 +741,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWC04 Camera 0.2.0 experimental - IOS %u\n", IOS_GetVersion());
+    report("\nWC04 Camera 0.3.0 Pearl local test - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report("0.1.3 captures and Photo Channel playback confirmed by tester; new viewfinder pending hardware test.\n");
     bool usb_ready = false;
@@ -669,18 +751,33 @@ int main(void)
         report("Launch under IOS58. This app does not install/reload IOS.\n");
     unsigned width = 320, height = 240;
     char status[80];
-    snprintf(status, sizeof(status), "%s", !usb_ready ? "CAMERA NEEDS IOS58 AND USB" :
-             mounted ? "CONNECT CAMERA THEN PRESS A" : "SD MISSING - PREVIEW ONLY");
+    snprintf(status, sizeof(status), "%s", !usb_ready ? "Camera needs IOS58 and USB" :
+             mounted ? "" : "SD missing - preview only");
     bool menu = true, open_live = false;
+    ScreenPage idle_page = SCREEN_MENU;
     while (!exit_requested) {
         if (menu) {
-            draw_screen(SCREEN_MENU, NULL, width, height, status);
+            draw_screen(idle_page, NULL, width, height, status);
             menu = false;
         }
         uint32_t down = buttons();
         if (exit_requested)
             break;
-        if (down & WPAD_BUTTON_1) {
+        if (idle_page == SCREEN_NO_SIGNAL && (down & WPAD_BUTTON_B)) {
+            idle_page = SCREEN_MENU;
+            snprintf(status, sizeof(status), "Ready when you are");
+            menu = true;
+            down = 0;
+        }
+        if (idle_page == SCREEN_MENU && (down & WPAD_BUTTON_PLUS)) {
+            screen_info.video = !screen_info.video;
+            menu = true;
+        }
+        if (idle_page == SCREEN_MENU && (down & (WPAD_BUTTON_LEFT | WPAD_BUTTON_RIGHT))) {
+            screen_info.timer = capture_timer_next(screen_info.timer, down & WPAD_BUTTON_LEFT ? -1 : 1);
+            menu = true;
+        }
+        if (idle_page == SCREEN_MENU && (down & WPAD_BUTTON_1)) {
             width = width == 320 ? 640 : 320;
             height = width == 320 ? 240 : 480;
             menu = true;
@@ -690,24 +787,38 @@ int main(void)
             open_live = false;
             draw_screen(SCREEN_WAITING, NULL, width, height, "CONNECTING CAMERA");
             s32 handle;
-            snprintf(status, sizeof(status), "CAMERA NOT FOUND - CHECK USB");
+            idle_page = SCREEN_NO_SIGNAL;
+            recorder_init(&recording);
+            snprintf(status, sizeof(status), "Camera not found - A retries, B menu");
             if (find_camera(&handle)) {
                 UvcMode mode;
                 UvcAlternate alt;
                 bool mode_ok = read_mode(handle, width, height, &mode);
+                if (mode_ok && scanning)
+                    idle_page = SCREEN_MENU;
                 IsoStop result = ISO_SUBMIT_FAILED;
-                snprintf(status, sizeof(status), "%s", mode_ok ? "CAMERA FOUND - READY" :
-                         "CAMERA SETUP FAILED - SEE LOG");
+                snprintf(status, sizeof(status), "%s", mode_ok ? "Camera found - ready" :
+                         "Camera setup failed - A retries");
                 if (mode_ok && !scanning) {
                     if (negotiate(handle, &mode, &alt))
                         result = receive_photo(handle, &mode, &alt);
                     s32 stopped = WC04_SetAlternate(handle, 0);
                     report("Stop streaming: %ld\n", (long)stopped);
                     snprintf(status, sizeof(status), "%s", result == ISO_CANCELLED ?
-                             "READY WHEN YOU ARE" : result == ISO_TIMEOUT ?
-                             "NO FRAMES - CHECK CAMERA AND LOG" : "CAMERA STOPPED - SEE LOG");
+                             "Ready when you are" : result == ISO_TIMEOUT ?
+                             "No frames - A retries, B menu" : "Camera stopped - A retries, B menu");
                 }
                 USB_CloseDevice(&handle);
+                if (result == ISO_CANCELLED || result == ISO_RECORD_STOPPED || result == ISO_PHOTO_READY)
+                    idle_page = SCREEN_MENU;
+                if (screen_info.video) {
+                    if (recording.saved)
+                        snprintf(status, sizeof(status), "Saved %s", strrchr(recording.path, '/')+1);
+                    else if (recording.failed)
+                        snprintf(status, sizeof(status), "Video not saved - check SD and log");
+                    else if (result == ISO_RECORD_STOPPED)
+                        snprintf(status, sizeof(status), "No video frames recorded");
+                }
                 if (result == ISO_PHOTO_READY) {
                     char path[80];
                     draw_screen(SCREEN_REVIEW, rgb, width, height, "SAVING PHOTO");
@@ -716,7 +827,7 @@ int main(void)
                         report("Saved %s\n", path);
                         snprintf(status, sizeof(status), "SAVED %s", strrchr(path, '/') + 1);
                     } else
-                        snprintf(status, sizeof(status), "SAVE FAILED - CHECK SD AND LOG");
+                        snprintf(status, sizeof(status), "Save failed - check SD and log");
                     draw_screen(SCREEN_REVIEW, rgb, width, height, status);
                     while (!exit_requested) {
                         uint32_t review = buttons();

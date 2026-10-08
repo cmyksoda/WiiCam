@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <app version="1">
-  <name>WC04 Camera (experimental)</name>
+  <name>WC04 Camera (Pearl local test)</name>
   <coder>cmyksoda</coder>
-  <version>0.2.0-experimental</version>
-  <short_description>WC04 live viewfinder and photos</short_description>
-  <long_description>Camera app for the Ubisoft / Hercules WC04 (057e:030a). Requires IOS58; writable SD is needed to save photos. A opens the live viewfinder, then A takes a photo. B returns to the menu. In the menu, A/B opens the viewfinder, 1 changes resolution and 2 checks the camera connection. HOME exits. Includes a new color renderer and automatic saved-photo review. Capture at both resolutions and Photo Channel playback were confirmed in 0.1.3; the new viewfinder and display changes still need hardware testing. If stopping waits for USB, unplug the camera.</long_description>
+  <version>0.3.0-pearl-local-test</version>
+  <short_description>Photos, timers, silent AVI test</short_description>
+  <long_description>PRIVATE LOCAL TEST: font redistribution rights unverified. WC04 (057e:030a), IOS58 and writable SD required to save. A opens live view; 1 changes size; 2 checks camera; + selects Photo/Video; left/right selects Off/3/5/10 second timer. Photo: A captures, B cancels countdown or returns to menu. Video: A starts/stops silent sampled MJPEG AVI, max 60 seconds/128 MiB. HOME finalizes and exits. Host-tested and compiled, new UI/timers/video await physical Wii testing. If USB stopping waits, unplug camera. Temporary icon: Giuseppe Ramos / Vecteezy.com; see included licenses.</long_description>
 </app>

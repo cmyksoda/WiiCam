@@ -3,6 +3,9 @@
 # Copyright (c) 2026 cmyksoda
 """Package only the experimental runtime, installation note, and licenses."""
 
+import argparse
+import json
+import shutil
 from hashlib import sha256
 from pathlib import Path
 import struct
@@ -14,6 +17,9 @@ FILES = [
     "boot.dol",
     "meta.xml",
     "INSTALL.txt",
+    "licenses/ASSET-PROVENANCE.txt",
+    "licenses/Vecteezy-License-Information.pdf",
+    "licenses/UI-font.txt",
     "licenses/WC04-GPLv3.txt",
     "licenses/libogc.txt",
     "licenses/wiiuse.txt",
@@ -49,10 +55,24 @@ def validate_dol(data):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--local-test', action='store_true')
+    args = parser.parse_args()
+    if not args.local_test:
+        parser.error('font-derived asset redistribution is unverified; only --local-test is supported')
+    font = json.loads((ROOT / 'build/ui-font.json').read_text())
+    for name in ('ASSET-PROVENANCE.txt', 'Vecteezy-License-Information.pdf'):
+        shutil.copyfile(ROOT / 'assets' / name, APP / 'licenses' / name)
+    (APP / 'licenses/UI-font.txt').write_text(
+        'PRIVATE LOCAL TEST ONLY\nFont: ' + ' '.join(font['name']) +
+        '\nSource font SHA-256: ' + font['sha256'] +
+        '\nThis DOL embeds rasterized glyphs from the selected local font.\n'
+        'The full font file is not included. Redistribution rights are not established.\n'
+        'Do not publish this binary without resolving font and artwork permissions.\n')
     data = (APP / "boot.dol").read_bytes()
     validate_dol(data)
     (APP / "licenses/WC04-GPLv3.txt").write_bytes((ROOT / "LICENSE").read_bytes())
-    archive = ROOT / "dist/WC04-Camera-0.2.0-experimental.zip"
+    archive = ROOT / "dist/WC04-Camera-0.3.0-pearl-local-test.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
         for name in FILES:
             package.write(APP / name, f"apps/wc04-camera/{name}")
