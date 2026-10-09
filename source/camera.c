@@ -42,6 +42,37 @@ static const char *describe(const CameraEntry *entry, const uint8_t *data,
     return NULL;
 }
 
+/* Discovery runs before streaming. At most two header lines plus four
+ * eight-interval lines per rejected candidate; no strings or raw descriptors. */
+static void report_limit(const CameraOps *ops, const CameraEntry *entry,
+                         unsigned width, unsigned height, const UvcMode *mode)
+{
+    char line[192];
+    snprintf(line, sizeof(line), "UVC limit: requested=%ux%u reason=%s value=%lu bound=%lu",
+             width, height, mode->limit_reason ? mode->limit_reason : "unknown",
+             (unsigned long)mode->limit_value, (unsigned long)mode->limit_bound);
+    report(ops, entry, line);
+    snprintf(line, sizeof(line),
+             "Descriptor: format=%u frame=%u max_frame=%lu cap=%u default_interval=%lu interval_count=%u",
+             mode->format, mode->frame, (unsigned long)mode->max_frame, WC04_FRAME_CAPACITY,
+             (unsigned long)mode->interval, mode->interval_count);
+    report(ops, entry, line);
+    if (!mode->interval_count) {
+        snprintf(line, sizeof(line), "Continuous intervals: min=%lu max=%lu step=%lu",
+                 (unsigned long)mode->interval_min, (unsigned long)mode->interval_max,
+                 (unsigned long)mode->interval_step);
+        report(ops, entry, line);
+    } else if (mode->interval_count <= UVC_MAX_INTERVALS) {
+        for (unsigned i = 0; i < mode->interval_count; i += 8) {
+            unsigned used = (unsigned)snprintf(line, sizeof(line), "Discrete intervals from index %u:", i);
+            for (unsigned j = i; j < mode->interval_count && j < i + 8; ++j)
+                used += (unsigned)snprintf(line + used, sizeof(line) - used, " %lu",
+                                          (unsigned long)mode->intervals[j]);
+            report(ops, entry, line);
+        }
+    }
+}
+
 bool camera_find(const CameraEntry *entries, size_t count, unsigned width, unsigned height,
                   uint8_t *scratch, size_t capacity, const CameraOps *ops,
                   int32_t *handle, UvcMode *mode)
@@ -108,6 +139,8 @@ bool camera_find(const CameraEntry *entries, size_t count, unsigned width, unsig
                 continue;
             }
             UvcParseResult parsed = uvc_parse(scratch, length, entry->interface, width, height, mode);
+            if (parsed == UVC_LIMIT)
+                report_limit(ops, entry, width, height, mode);
             report(ops, entry, uvc_parse_description(parsed));
             if (parsed != UVC_OK) {
                 ops->close(ops->context, opened);

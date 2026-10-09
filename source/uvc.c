@@ -67,6 +67,14 @@ static size_t class_length(const uint8_t *data, size_t length, size_t offset)
     return offset - start;
 }
 
+static UvcParseResult limit(UvcMode *mode, const char *reason, uint32_t value, uint32_t bound)
+{
+    mode->limit_reason = reason;
+    mode->limit_value = value;
+    mode->limit_bound = bound;
+    return UVC_LIMIT;
+}
+
 UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned target,
                          unsigned width, unsigned height, UvcMode *mode)
 {
@@ -149,8 +157,6 @@ UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned target,
                     return UVC_MALFORMED;
                 if (found || !progressive || uvc_le16(d + 5) != width || uvc_le16(d + 7) != height)
                     continue;
-                if (count > UVC_MAX_INTERVALS)
-                    return UVC_LIMIT;
                 mode->format = (uint8_t)format;
                 mode->frame = d[3];
                 mode->width = (uint16_t)width;
@@ -158,22 +164,31 @@ UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned target,
                 mode->max_frame = uvc_le32(d + 17);
                 mode->interval = uvc_le32(d + 21);
                 mode->interval_count = count;
-                for (unsigned i = 0; i < count; ++i) {
+                if (count > UVC_MAX_INTERVALS)
+                    return limit(mode, "too many discrete intervals", count, UVC_MAX_INTERVALS);
+                for (unsigned i = 0; i < count; ++i)
                     mode->intervals[i] = uvc_le32(d + 26 + 4*i);
+                for (unsigned i = 0; i < count; ++i) {
                     if (!mode->intervals[i])
-                        return UVC_LIMIT;
+                        return limit(mode, "zero discrete interval at index", i, count);
                 }
                 if (!count) {
                     mode->interval_min = uvc_le32(d + 26);
                     mode->interval_max = uvc_le32(d + 30);
                     mode->interval_step = uvc_le32(d + 34);
-                    if (!mode->interval_min || mode->interval_min > mode->interval_max ||
-                        !mode->interval_step)
-                        return UVC_LIMIT;
+                    if (!mode->interval_min)
+                        return limit(mode, "zero continuous minimum", 0, mode->interval_max);
+                    if (mode->interval_min > mode->interval_max)
+                        return limit(mode, "continuous minimum exceeds maximum", mode->interval_min, mode->interval_max);
+                    if (!mode->interval_step)
+                        return limit(mode, "zero continuous step", 0, 1);
                 }
-                if (!mode->max_frame || mode->max_frame > WC04_FRAME_CAPACITY ||
-                    !uvc_interval_supported(mode, mode->interval))
-                    return UVC_LIMIT;
+                if (!mode->max_frame)
+                    return limit(mode, "zero frame buffer size", 0, WC04_FRAME_CAPACITY);
+                if (mode->max_frame > WC04_FRAME_CAPACITY)
+                    return limit(mode, "frame buffer exceeds capacity", mode->max_frame, WC04_FRAME_CAPACITY);
+                if (!uvc_interval_supported(mode, mode->interval))
+                    return limit(mode, "default interval not advertised", mode->interval, count);
                 found = true;
             } else if (d[2] != 3 && d[2] != 0x0d) {
                 /* Unknown format/subtype must never inherit an MJPEG format index. */
@@ -198,7 +213,7 @@ UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned target,
             if (!packet || packet > 1024 || multiplier == 3 || (raw & 0xe000) || seen_alts[alternate])
                 return UVC_MALFORMED;
             if (mode->alt_count == WC04_MAX_ALTS)
-                return UVC_LIMIT;
+                return limit(mode, "too many matching alternates", (uint32_t)mode->alt_count + 1, WC04_MAX_ALTS);
             seen_alts[alternate] = true;
             mode->alts[mode->alt_count++] = (UvcAlternate){
                 (uint8_t)alternate, d[2], (uint16_t)(packet * (multiplier + 1))
@@ -272,6 +287,40 @@ void uvc_frame_init(UvcFrame *frame, uint8_t *data, size_t capacity)
     *frame = (UvcFrame){.data = data, .capacity = capacity, .fid = -1};
 }
 
+/* At most four 24-byte copies and four <=15-pair scans per capture. No I/O,
+ * heap allocation or full-frame scan; samples never affect JPEG acceptance. */
+static void boundary_rejected(UvcFrame *frame, uint8_t header_length, uint8_t flags)
+{
+    UvcStats *stats = &frame->stats;
+    uint8_t reasons = 0;
+    if (frame->size < 4) { ++stats->short_jpeg; reasons |= UVC_SHORT_JPEG; }
+    if (frame->size < 2 || frame->data[0] != 0xff || frame->data[1] != 0xd8) {
+        ++stats->missing_soi; reasons |= UVC_MISSING_SOI;
+    }
+    if (frame->size < 2 || frame->data[frame->size-2] != 0xff || frame->data[frame->size-1] != 0xd9) {
+        ++stats->missing_eoi; reasons |= UVC_MISSING_EOI;
+    }
+    ++stats->rejected_mod8[frame->size & 7];
+    if (frame->boundary_samples == UVC_BOUNDARY_SAMPLES)
+        return;
+    UvcBoundarySample *sample = &frame->boundary[frame->boundary_samples++];
+    sample->size = (uint32_t)frame->size;
+    sample->reasons = reasons;
+    sample->header_length = header_length;
+    sample->flags = flags;
+    sample->head_length = frame->size < UVC_BOUNDARY_HEAD ? frame->size : UVC_BOUNDARY_HEAD;
+    sample->tail_length = frame->size < UVC_BOUNDARY_TAIL ? frame->size : UVC_BOUNDARY_TAIL;
+    memcpy(sample->head, frame->data, sample->head_length);
+    memcpy(sample->tail, frame->data + frame->size - sample->tail_length, sample->tail_length);
+    sample->eoi_distance = -1;
+    for (int i = (int)sample->tail_length - 2; i >= 0; --i) {
+        if (sample->tail[i] == 0xff && sample->tail[i+1] == 0xd9) {
+            sample->eoi_distance = (int8_t)(sample->tail_length - i - 2);
+            break;
+        }
+    }
+}
+
 bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length)
 {
     ++frame->stats.packets;
@@ -333,11 +382,14 @@ bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length)
         if (!frame->discard) {
             if (!frame->size)
                 ++frame->stats.empty_frames;
-            else
+            else {
                 ++frame->stats.invalid_jpeg;
+                boundary_rejected(frame, packet[0], (uint8_t)flags);
+            }
         }
         return false;
     }
     ++frame->stats.complete;
+    ++frame->stats.accepted_mod8[frame->size & 7];
     return true;
 }

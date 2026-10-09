@@ -42,6 +42,8 @@ HOST_CC ?= cc
 JPEG_CFLAGS ?=
 JPEG_LIBS ?= -ljpeg
 test: build/ui_assets.h | build
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_uvc_diagnostics.c -o build/test_uvc_diagnostics
+	./build/test_uvc_diagnostics
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_uvc_generic.c -o build/test_uvc_generic
 	./build/test_uvc_generic
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/camera.c tests/test_camera.c -o build/test_camera

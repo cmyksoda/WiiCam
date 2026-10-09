@@ -13,6 +13,9 @@
 #define WC04_MAX_ALTS 16
 #define UVC_PROBE_LENGTH 26
 #define UVC_MAX_INTERVALS 32
+#define UVC_BOUNDARY_SAMPLES 4
+#define UVC_BOUNDARY_HEAD 8
+#define UVC_BOUNDARY_TAIL 16
 
 enum {
     UVC_SET_CUR = 0x01,
@@ -40,12 +43,29 @@ typedef struct {
     uint32_t intervals[UVC_MAX_INTERVALS], interval_min, interval_max, interval_step;
     UvcAlternate alts[WC04_MAX_ALTS];
     size_t alt_count;
+    /* Populated only for UVC_LIMIT; does not change mode acceptance. */
+    const char *limit_reason;
+    uint32_t limit_value, limit_bound;
 } UvcMode;
+
+enum { UVC_SHORT_JPEG = 1, UVC_MISSING_SOI = 2, UVC_MISSING_EOI = 4 };
+
+typedef struct {
+    uint32_t size;
+    uint8_t reasons, header_length, flags, head_length, tail_length;
+    /* Raw FF D9 distance from end within last 16 bytes; -1 means not found.
+     * This is a diagnostic byte pair, not a parsed or validated JPEG marker. */
+    int8_t eoi_distance;
+    uint8_t head[UVC_BOUNDARY_HEAD], tail[UVC_BOUNDARY_TAIL];
+} UvcBoundarySample;
 
 typedef struct {
     unsigned packets, bytes, empty, header_only, payload_packets, payload_bytes;
     unsigned bad_headers, errors, eof, fid_changes, overflow;
     unsigned missing_eof, empty_frames, invalid_jpeg, complete;
+    /* Nonempty, non-discarded EOF frames only; reason counters can overlap. */
+    unsigned short_jpeg, missing_soi, missing_eoi;
+    unsigned accepted_mod8[8], rejected_mod8[8];
 } UvcStats;
 
 typedef struct {
@@ -55,6 +75,8 @@ typedef struct {
     bool discard, ended;
     unsigned dropped;
     UvcStats stats;
+    unsigned boundary_samples;
+    UvcBoundarySample boundary[UVC_BOUNDARY_SAMPLES];
 } UvcFrame;
 
 uint16_t uvc_le16(const uint8_t *p);

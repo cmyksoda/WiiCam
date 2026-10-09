@@ -12,7 +12,7 @@ typedef struct {
     Fixture configs[2];
     unsigned faults[2], opens[2], closes[2], reads[2], messages;
     unsigned order[2], attempts;
-    char last_message[160], ios_message[160];
+    char last_message[192], ios_message[192], messages_text[4096];
 } Fake;
 
 static unsigned index_of(int32_t handle)
@@ -96,6 +96,10 @@ static void message(void *context, const CameraEntry *entry, const char *text)
     Fake *f = context;
     assert(entry && text && text[0]);
     ++f->messages;
+    size_t used = strlen(f->messages_text);
+    assert(strlen(text) < 192);
+    int written = snprintf(f->messages_text + used, sizeof(f->messages_text) - used, "%s\n", text);
+    assert(written >= 0 && (size_t)written < sizeof(f->messages_text) - used);
     snprintf(f->last_message, sizeof(f->last_message), "%s", text);
     if (strstr(text, "IOS descriptor fields:"))
         snprintf(f->ios_message, sizeof(f->ios_message), "%s", text);
@@ -111,14 +115,19 @@ static Fake make_fake(void)
     return f;
 }
 
-static bool find(Fake *f, size_t count, int32_t *handle, UvcMode *mode)
+static bool find_size(Fake *f, size_t count, unsigned width, unsigned height, int32_t *handle, UvcMode *mode)
 {
     struct { uint8_t before, data[4096], after; } memory = {.before=0x5a, .after=0xa5};
     CameraOps ops = {f, open_camera, parameters, read_control, close_camera, message};
-    bool found = camera_find(f->entries, count, 320, 240, memory.data, sizeof(memory.data),
+    bool found = camera_find(f->entries, count, width, height, memory.data, sizeof(memory.data),
                              &ops, handle, mode);
     assert(memory.before == 0x5a && memory.after == 0xa5);
     return found;
+}
+
+static bool find(Fake *f, size_t count, int32_t *handle, UvcMode *mode)
+{
+    return find_size(f, count, 320, 240, handle, mode);
 }
 
 int main(void)
@@ -175,6 +184,39 @@ int main(void)
         assert(f.order[0] == 1 && f.order[1] == 0);
         assert(f.closes[1] == (fault == OPEN ? 0u : 1u) && !f.closes[0]);
     }
+    /* Precise, bounded diagnostics before mode is cleared on discovery failure. */
+    f = make_fake();
+    uint8_t *descriptor = f.configs[0].data + f.configs[0].frame;
+    descriptor[5] = 0x80; descriptor[6] = 2; descriptor[7] = 0xe0; descriptor[8] = 1;
+    uvc_put32(descriptor + 17, 614989); /* synthetic hypothesis, not hardware data */
+    assert(!find_size(&f, 1, 640, 480, &handle, &mode));
+    assert(f.closes[0] == 1 && f.reads[0] == 3 && f.messages == 5);
+    assert(strstr(f.messages_text, "requested=640x480 reason=frame buffer exceeds capacity value=614989 bound=614400"));
+    assert(strstr(f.messages_text, "max_frame=614989 cap=614400 default_interval=333333 interval_count=2"));
+    assert(strstr(f.messages_text, "Discrete intervals from index 0: 333333 666666"));
+    f = make_fake();
+    f.configs[0] = fixture(5, 3, 0x83, true);
+    uvc_put32(f.configs[0].data + f.configs[0].frame + 34, 0);
+    assert(!find(&f, 1, &handle, &mode));
+    assert(strstr(f.messages_text, "reason=zero continuous step value=0 bound=1"));
+    assert(strstr(f.messages_text, "Continuous intervals: min=333333 max=9999990 step=0"));
+    assert(f.messages == 5 && f.closes[0] == 1);
+    /* Maximum interval list with ten-digit values fits four bounded lines. */
+    f = make_fake();
+    Fixture *many = &f.configs[0];
+    size_t extra = 30 * 4, end = many->frame + many->data[many->frame];
+    memmove(many->data + end + extra, many->data + end, many->length - end);
+    many->length += extra;
+    many->data[2] = many->length; many->data[3] = many->length >> 8;
+    many->data[many->frame] += extra; many->data[many->frame + 25] = 32;
+    unsigned class_size = uvc_le16(many->data + many->header + 4) + extra;
+    many->data[many->header + 4] = class_size; many->data[many->header + 5] = class_size >> 8;
+    for (unsigned i = 0; i < 32; ++i)
+        uvc_put32(many->data + many->frame + 26 + 4*i, UINT32_MAX);
+    uvc_put32(many->data + many->frame + 17, WC04_FRAME_CAPACITY + 1);
+    assert(!find(&f, 1, &handle, &mode));
+    assert(f.messages == 8 && f.closes[0] == 1);
+    assert(strstr(f.messages_text, "Discrete intervals from index 24: 4294967295 4294967295"));
     f = make_fake();
     assert(!find(&f, 33, &handle, &mode) && !f.attempts);
     assert(!find(&f, 0, &handle, &mode) && !f.attempts);

@@ -1,11 +1,21 @@
-WC04 Camera 0.3.2 USB EXPERIMENTAL - PRIVATE LOCAL TEST ONLY
+WC04 Camera 0.3.3 USB DIAGNOSTIC - PRIVATE LOCAL TEST ONLY
 
 Copy apps/wc04-camera-experimental to the SD card's apps directory.
 Replace the existing experimental folder's contents with this version; keep the
-baseline apps/wc04-camera folder and earlier ZIPs. Confirm 0.3.2 in HBC.
-This build fixes compact IOS vendor/product byte order and improves rejection
-logs. Other-camera operation is still unverified; later compatibility limits
-may remain. Existing photographs/videos need not be deleted.
+baseline apps/wc04-camera folder and earlier ZIPs. Confirm 0.3.3 in HBC; keep the working 0.3.2 ZIP.
+This diagnostic build records four rejected JPEG boundaries at most per capture
+(8-byte prefix, 16-byte suffix), reason counts and size-modulo-eight histograms.
+It logs exact descriptor-limit values before streaming. Boundary samples and
+capture summaries are written only after stopping; no per-frame disk logging.
+JPEG validation, buffer limits and negotiation are unchanged. Padding and the
+640x480 frame-bound hypothesis are not established. Existing media stays intact.
+
+Short test: open 320x240 Photo view, wait about 10 seconds, then A to save one
+photo (or B to stop if capture is unavailable). From the menu press 1 once for
+640x480 and 2 for one camera check; no high-resolution streaming is needed for
+the descriptor evidence. Exit with HOME and share the appended session.log,
+including the 0.3.3 banner and both attempts. Recording need not be repeated.
+
 Requires Wii Remote, HBC under IOS58, writable FAT SD for saving.
 
 Experimental subset: single-configuration UVC 1.0 cameras offering progressive
@@ -13,8 +23,8 @@ MJPEG at 320x240 or 640x480, isochronous IN with bInterval=1, advertised
 frame buffer at most 614400 bytes and a supported descriptor default interval.
 WC04 is preferred when connected. Otherwise the first supported interface wins.
 Use one camera; change the menu size explicitly if that size is unsupported.
-No actual speed is inferred from the USB version. Non-WC04 cameras, full-speed
-operation, hubs and vWii are unverified. No guarantee of frame rate or compatibility.
+No actual speed is inferred from the USB version. Full-speed operation, hubs,
+vWii and other configurations are unverified. No general compatibility guarantee.
 Newer UVC 1.1/1.5 controls, bulk, YUYV, interlaced modes, proprietary protocols,
 audio, multiple configurations and automatic reconnect are unsupported.
 Camera check reads descriptors only; supported descriptors do not prove video.
@@ -45,9 +55,12 @@ No decoded frame for 1 second shows full SMPTE bars; 10 seconds stops the stream
 Timer or pending shutter is canceled by lost signal. If USB drain waits, unplug the camera.
 A wedged IOS or SD operation can still block; do not remove SD while saving.
 
-This experiment is host-tested and compiled, NOT verified on physical Wii.
-The old WC04 0.1.3 still-photo evidence does not certify this build or other devices.
-Physical testing is deferred. Keep the baseline ZIP for later comparison.
+This 0.3.3 diagnostic build is host-tested and compiled, NOT physically verified.
+Jaxi's 0.3.2 log/media confirmed two 320x240 photos and an 11.112-second, 44-frame
+silent AVI on 0c45:6366 under IOS58. She reported Photo Channel playback, lag,
+cutouts, higher-size failure and phone playback failure. Camera model and console
+variant remain unknown. Those results do not certify this diagnostic build.
+The 0.3.2 log shows dominant pre-decode JPEG-boundary rejects, not worker skips.
 
 Temporary webcam art: Giuseppe Ramos (stockgiu) / Vecteezy.com.
 https://www.vecteezy.com/vector-art/5252064-webcam-device-technology

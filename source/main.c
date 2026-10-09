@@ -641,6 +641,14 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
     report("Dropped %u: missing EOF %u, empty frames %u\n",
            frame->dropped, stats->missing_eof, stats->empty_frames);
     report("Invalid JPEG %u, overflow %u\n", stats->invalid_jpeg, stats->overflow);
+    report("JPEG boundary reasons (overlap): short=%u missing_soi=%u missing_terminal_eoi=%u\n",
+           stats->short_jpeg, stats->missing_soi, stats->missing_eoi);
+    report("JPEG accepted size mod8 [0..7]: %u %u %u %u %u %u %u %u\n",
+           stats->accepted_mod8[0], stats->accepted_mod8[1], stats->accepted_mod8[2], stats->accepted_mod8[3],
+           stats->accepted_mod8[4], stats->accepted_mod8[5], stats->accepted_mod8[6], stats->accepted_mod8[7]);
+    report("JPEG rejected size mod8 [0..7]: %u %u %u %u %u %u %u %u\n",
+           stats->rejected_mod8[0], stats->rejected_mod8[1], stats->rejected_mod8[2], stats->rejected_mod8[3],
+           stats->rejected_mod8[4], stats->rejected_mod8[5], stats->rejected_mod8[6], stats->rejected_mod8[7]);
     report("JPEG candidates %u, decode rejected %u, oversized slots %u\n",
            stats->complete, capture.rejected, capture.oversized);
     report("Unfinished frame: %u bytes, discard=%u, ended=%u\n",
@@ -649,6 +657,19 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
         report("Only UVC headers received; no image payload reached the decoder.\n");
     /* All queued transfers have returned ownership before diagnostic I/O. */
     if (log_file && capture.batches) {
+        report("JPEG rejected boundary samples: %u/%u; reasons bits short=1 noSOI=2 noEOI=4.\n",
+               frame->boundary_samples, UVC_BOUNDARY_SAMPLES);
+        for (unsigned i = 0; i < frame->boundary_samples; ++i) {
+            const UvcBoundarySample *sample = &frame->boundary[i];
+            report("Rejected JPEG %u: size=%lu mod8=%u reasons=%u EOF_header=%u flags=%02x raw_EOI_tail_gap=%d\n",
+                   i, (unsigned long)sample->size, (unsigned)(sample->size & 7),
+                   sample->reasons, sample->header_length, sample->flags, sample->eoi_distance);
+            log_text("Rejected JPEG prefix (up to 8 bytes):");
+            log_hex(sample->head, sample->head_length);
+            log_text("Rejected JPEG suffix (up to 16 bytes):");
+            log_hex(sample->tail, sample->tail_length);
+        }
+        log_text("raw_EOI_tail_gap is a byte-pair hint in the final 16 bytes, -1 absent; validation is unchanged.");
         report("First batch completion: %d; packet samples in SD log.\n", capture.first_result);
         for (unsigned i = 0; i < ISO_PACKETS; ++i) {
             log_sample("Requested-stride sample", &capture.first[i]);
@@ -725,9 +746,9 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWC04 Camera 0.3.2 UVC EXPERIMENTAL local test - IOS %u\n", IOS_GetVersion());
+    report("\nWC04 Camera 0.3.3 UVC DIAGNOSTIC local test - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
-    report("0.1.3 captures and Photo Channel playback confirmed by tester; new viewfinder pending hardware test.\n");
+    report("0.3.2 photo/video capture verified on 0c45:6366 at 320x240; this diagnostic build awaits hardware testing.\n");
     bool usb_ready = false;
     if (IOS_GetVersion() == 58)
         usb_ready = buffers_ready && USB_Initialize() >= 0;
