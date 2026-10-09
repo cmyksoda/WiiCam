@@ -14,7 +14,7 @@ LIBS := -ljpeg -lfat -lwiiuse -lbte -logc -lm
 OBJECTS := $(patsubst source/%.c,build/%.o,$(wildcard source/*.c)) build/usb.o
 
 .PHONY: all clean test package
-all: dist/apps/wc04-camera/boot.dol
+all: dist/apps/wc04-camera-experimental/boot.dol
 
 WC04_FONT ?=
 
@@ -35,13 +35,17 @@ build:
 build/wc04-camera.elf: $(OBJECTS)
 	$(LD) $^ $(LDFLAGS) $(LIBPATHS) $(LIBS) -o $@
 
-dist/apps/wc04-camera/boot.dol: build/wc04-camera.elf
+dist/apps/wc04-camera-experimental/boot.dol: build/wc04-camera.elf
 	$(DEVKITPRO)/tools/bin/elf2dol $< $@
 
 HOST_CC ?= cc
 JPEG_CFLAGS ?=
 JPEG_LIBS ?= -ljpeg
 test: build/ui_assets.h | build
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_uvc_generic.c -o build/test_uvc_generic
+	./build/test_uvc_generic
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/camera.c tests/test_camera.c -o build/test_camera
+	./build/test_camera
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/avi.c tests/test_avi.c -o build/test_avi
 	./build/test_avi
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/storage.c tests/test_storage.c -o build/test_storage
@@ -83,7 +87,7 @@ package-local: all
 	python3 tools/package.py --local-test
 
 clean:
-	rm -rf build dist/apps/wc04-camera/boot.dol
+	rm -rf build dist/apps/wc04-camera-experimental/boot.dol
 
 -include $(OBJECTS:.o=.d)
 

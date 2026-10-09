@@ -27,9 +27,11 @@
 #include "capture_control.h"
 #include "recorder.h"
 #include "storage.h"
+#include "camera.h"
 
 #define FRAME_TIMEOUT_SECONDS 10
-#define CONFIG_CAPACITY 4096
+#define CONFIG_CAPACITY CAMERA_CONFIG_CAPACITY
+_Static_assert(UVC_PROBE_LENGTH <= 32, "probe must fit reserved MEM2 bank");
 
 static uint8_t *config;
 static uint8_t *probe;
@@ -53,6 +55,7 @@ static Recorder recording;
 
 s32 WC04_SetAlternate(s32 device_id, u8 alternate);
 s32 WC04_CancelIso(s32 device_id, u8 endpoint);
+s32 WC04_GetInterfaceParameters(s32 device_id, u8 *parameters);
 
 static void draw_screen_info(ScreenPage page, const uint8_t *pixels,
                              unsigned width, unsigned height, const ScreenInfo *info)
@@ -172,93 +175,74 @@ static bool ensure_directory(const char *path)
     return mkdir(path, 0777) == 0;
 }
 
-static bool find_camera(s32 *handle)
+static int camera_open(void *context, const CameraEntry *entry, int32_t *handle)
 {
-    usb_device_entry devices[32];
-    u8 count = 0;
-    s32 result = USB_GetDeviceList(devices, 32, 0, &count);
-    report("USB enumeration: %ld, devices: %u\n", (long)result, count);
-    if (result < 0)
-        return false;
-    for (unsigned i = 0; i < count; ++i) {
-        unsigned interface = (devices[i].token >> 8) & 0xff;
-        report("  %04x:%04x id=%ld interface=%u\n", devices[i].vid, devices[i].pid,
-               (long)devices[i].device_id, interface);
-        if (devices[i].vid == 0x057e && devices[i].pid == 0x030a && interface == 1) {
-            result = USB_OpenDevice(devices[i].device_id, 0x057e, 0x030a, handle);
-            report("WC04 open: %ld\n", (long)result);
-            /* IOS USBv5 vendor handles are negative; test the result, not fd. */
-            if (result < 0)
-                continue;
-            usb_devdesc description;
-            memset(&description, 0, sizeof(description));
-            result = USB_GetDescriptors(*handle, &description);
-            bool streaming = false;
-            if (result >= 0) {
-                if (description.bNumConfigurations && description.configurations &&
-                    description.configurations[0].bNumInterfaces &&
-                    description.configurations[0].interfaces) {
-                    usb_interfacedesc *in = description.configurations[0].interfaces;
-                    streaming = in->bInterfaceNumber == 1 &&
-                                in->bInterfaceClass == 14 && in->bInterfaceSubClass == 2;
-                }
-                USB_FreeDescriptors(&description);
-            }
-            report("IOS streaming-interface descriptors: %ld, match=%u\n",
-                   (long)result, streaming);
-            if (streaming)
-                return true;
-            USB_CloseDevice(handle);
-        }
-    }
-    report("No WC04 (057e:030a). Connect it, then press A.\n");
-    return false;
+    (void)context;
+    s32 device;
+    int result = USB_OpenDevice(entry->id, entry->vid, entry->pid, &device);
+    /* Negative vendor handles are valid; only the return code signals failure. */
+    if (result >= 0)
+        *handle = device;
+    return result;
 }
 
-static bool read_mode(s32 handle, unsigned width, unsigned height, UvcMode *mode)
+static int camera_parameters(void *context, int32_t handle, uint8_t *data)
 {
-    memset(config, 0, CONFIG_CAPACITY);
-    s32 result = USB_ReadCtrlMsg(handle, 0x80, USB_REQ_GETDESCRIPTOR,
-                                0x0200, 0, 9, config);
-    if (result < 9) {
-        report("Configuration header failed: %ld\n", (long)result);
+    (void)context;
+    return WC04_GetInterfaceParameters(handle, data);
+}
+
+static int camera_read(void *context, int32_t handle, uint8_t request,
+                       uint16_t value, uint16_t length, uint8_t *data)
+{
+    (void)context;
+    int result = USB_ReadCtrlMsg(handle, 0x80, request, value, 0, length, data);
+    report("Descriptor/control request %u value %04x length %u: raw %d, payload %d\n",
+           request, value, length, result, uvc_control_payload_length(result, length));
+    return result;
+}
+
+static void camera_close(void *context, int32_t handle)
+{
+    (void)context;
+    s32 device = handle;
+    USB_CloseDevice(&device);
+}
+
+static void camera_report(void *context, const CameraEntry *entry, const char *message)
+{
+    (void)context;
+    report("Candidate %04x:%04x interface %u: %s\n", entry->vid, entry->pid,
+           entry->interface, message);
+}
+
+static bool find_camera(s32 *handle, unsigned width, unsigned height, UvcMode *mode)
+{
+    usb_device_entry devices[CAMERA_MAX_DEVICES];
+    CameraEntry entries[CAMERA_MAX_DEVICES];
+    u8 count = 0;
+    s32 result = USB_GetDeviceList(devices, CAMERA_MAX_DEVICES, 0, &count);
+    report("USB enumeration: %ld, interfaces: %u; actual bus speed unknown\n", (long)result, count);
+    if (result < 0 || count > CAMERA_MAX_DEVICES)
+        return false;
+    for (unsigned i = 0; i < count; ++i)
+        entries[i] = (CameraEntry){devices[i].device_id, devices[i].vid, devices[i].pid,
+                                   (uint8_t)(devices[i].token >> 8)};
+    const CameraOps ops = {
+        .open = camera_open, .parameters = camera_parameters, .read = camera_read,
+        .close = camera_close, .report = camera_report
+    };
+    int32_t selected;
+    if (!camera_find(entries, count, width, height, config, CONFIG_CAPACITY, &ops, &selected, mode)) {
+        report("No supported camera mode. UVC 1.0 MJPEG, 320x240/640x480, interval-1 ISO only.\n");
         return false;
     }
-    unsigned length = uvc_le16(config + 2);
-    if (length < 9 || length > CONFIG_CAPACITY) {
-        report("Unsupported configuration length: %u\n", length);
-        return false;
-    }
-    result = USB_ReadCtrlMsg(handle, 0x80, USB_REQ_GETDESCRIPTOR,
-                             0x0200, 0, (u16)length, config);
-    if (result < (s32)length) {
-        report("Configuration read failed/short: %ld\n", (long)result);
-        return false;
-    }
-    if (log_file) {
-        report("Configuration bytes (%u); SD log contains the dump.\n", length);
-        log_hex(config, length);
-        fflush(log_file);
-    }
-    if (!uvc_parse(config, length, width, height, mode) || mode->interface != 1) {
-        report("No supported UVC 1.0 MJPEG %ux%u mode.\n", width, height);
-        return false;
-    }
-    report("MJPEG format %u frame %u, interface %u, %ux%u\n",
-           mode->format, mode->frame, mode->interface, mode->width, mode->height);
-    u8 current = 0;
-    result = USB_GetConfiguration(handle, &current);
-    if (result < 0) {
-        report("GET_CONFIGURATION failed: %ld\n", (long)result);
-        return false;
-    }
-    if (current != mode->configuration) {
-        result = USB_SetConfiguration(handle, mode->configuration);
-        if (result < 0) {
-            report("SET_CONFIGURATION failed: %ld\n", (long)result);
-            return false;
-        }
-    }
+    *handle = selected;
+    report("Selected VC %u / VS %u / endpoint %02x / MJPEG format %u frame %u, %ux%u\n",
+           mode->control_interface, mode->interface, mode->endpoint, mode->format,
+           mode->frame, mode->width, mode->height);
+    report("Descriptor default interval %lu; other-camera operation is unverified.\n",
+           (unsigned long)mode->interval);
     return true;
 }
 
@@ -286,7 +270,7 @@ static int probe_transfer(void *context, uint8_t request, uint16_t selector,
                                  camera->interface, UVC_PROBE_LENGTH, data);
     }
     /* IOS58 counts the eight-byte setup packet in control completions. */
-    int length = result < 8 ? -1 : result - 8;
+    int length = uvc_control_payload_length(result, UVC_PROBE_LENGTH);
     report("%s %s result: %ld; payload count: %d\n", operation, control,
            (long)result, length);
     if (request != UVC_SET_CUR && length > 0)
@@ -741,7 +725,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWC04 Camera 0.3.0 Pearl local test - IOS %u\n", IOS_GetVersion());
+    report("\nWC04 Camera 0.3.1 UVC EXPERIMENTAL local test - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report("0.1.3 captures and Photo Channel playback confirmed by tester; new viewfinder pending hardware test.\n");
     bool usb_ready = false;
@@ -752,7 +736,7 @@ int main(void)
     unsigned width = 320, height = 240;
     char status[80];
     snprintf(status, sizeof(status), "%s", !usb_ready ? "Camera needs IOS58 and USB" :
-             mounted ? "" : "SD missing - preview only");
+             mounted ? "Experimental USB support" : "Experimental - SD missing");
     bool menu = true, open_live = false;
     ScreenPage idle_page = SCREEN_MENU;
     while (!exit_requested) {
@@ -790,16 +774,14 @@ int main(void)
             idle_page = SCREEN_NO_SIGNAL;
             recorder_init(&recording);
             snprintf(status, sizeof(status), "Camera not found - A retries, B menu");
-            if (find_camera(&handle)) {
-                UvcMode mode;
+            UvcMode mode;
+            if (find_camera(&handle, width, height, &mode)) {
                 UvcAlternate alt;
-                bool mode_ok = read_mode(handle, width, height, &mode);
-                if (mode_ok && scanning)
+                if (scanning)
                     idle_page = SCREEN_MENU;
                 IsoStop result = ISO_SUBMIT_FAILED;
-                snprintf(status, sizeof(status), "%s", mode_ok ? "Camera found - ready" :
-                         "Camera setup failed - A retries");
-                if (mode_ok && !scanning) {
+                snprintf(status, sizeof(status), "Descriptors supported - stream untested");
+                if (!scanning) {
                     if (negotiate(handle, &mode, &alt))
                         result = receive_photo(handle, &mode, &alt);
                     s32 stopped = WC04_SetAlternate(handle, 0);

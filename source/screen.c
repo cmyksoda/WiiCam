@@ -135,6 +135,7 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
     round_box(margin, 76, 11, 3, 1, 0x8ad0e0);
     round_box(margin+15, 76, 11, 3, 1, 0xd993b5);
     round_box(margin+30, 76, 11, 3, 1, 0xefd17e);
+    text(margin+60, 78, "USB experimental", 12, muted);
     if (page == SCREEN_MENU) {
         int left = (w-544)/2;
         round_box(left, 102, 544, 294, 24, 0xd3e1e6);
@@ -148,7 +149,7 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
         centered(left+103, 298, "Vecteezy.com", 12, muted);
         text(left+194, 146, "Ready when", 28, ink);
         text(left+194, 180, "you are.", 28, ink);
-        text(left+194, 214, "Connect your WC04.", 20, muted);
+        text(left+194, 214, "Connect a USB camera.", 20, muted);
         round_box(left+187, 237, 325, 58, 29, cyan);
         round_box(left+188, 238, 323, 56, 28, 0xe2f5fb);
         key(left+215, 266, "A", 0xe2f5fb, cyan, cyan);

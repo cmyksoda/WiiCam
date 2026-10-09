@@ -12,7 +12,7 @@ import struct
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = ROOT / "dist/apps/wc04-camera"
+APP = ROOT / "dist/apps/wc04-camera-experimental"
 FILES = [
     "boot.dol",
     "meta.xml",
@@ -72,14 +72,14 @@ def main():
     data = (APP / "boot.dol").read_bytes()
     validate_dol(data)
     (APP / "licenses/WC04-GPLv3.txt").write_bytes((ROOT / "LICENSE").read_bytes())
-    archive = ROOT / "dist/WC04-Camera-0.3.0-pearl-local-test.zip"
+    archive = ROOT / "dist/WC04-Camera-0.3.1-uvc-experimental-local-test.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
         for name in FILES:
-            package.write(APP / name, f"apps/wc04-camera/{name}")
+            package.write(APP / name, f"apps/wc04-camera-experimental/{name}")
     with zipfile.ZipFile(archive) as package:
         assert package.testzip() is None
-        assert package.namelist() == [f"apps/wc04-camera/{name}" for name in FILES]
-        assert package.read("apps/wc04-camera/boot.dol") == data
+        assert package.namelist() == [f"apps/wc04-camera-experimental/{name}" for name in FILES]
+        assert package.read("apps/wc04-camera-experimental/boot.dol") == data
     print(f"DOL: {len(data)} bytes; SHA-256 {sha256(data).hexdigest()}")
     print(f"ZIP: {archive.relative_to(ROOT)}; SHA-256 {sha256(archive.read_bytes()).hexdigest()}")
 

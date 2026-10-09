@@ -1,5 +1,6 @@
 /build/
 /dist/apps/wc04-camera/boot.dol
+/dist/apps/wc04-camera-experimental/boot.dol
 /dist/*.zip
 __pycache__/
 

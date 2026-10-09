@@ -22,75 +22,190 @@ void uvc_put32(uint8_t *p, uint32_t value)
         p[i] = (uint8_t)(value >> (8 * i));
 }
 
-bool uvc_parse(const uint8_t *data, size_t length, unsigned width,
-               unsigned height, UvcMode *mode)
+const char *uvc_parse_description(UvcParseResult result)
+{
+    const char *const descriptions[] = {
+        "supported UVC 1.0 MJPEG descriptors", "malformed configuration descriptors",
+        "missing or ambiguous video-control association", "only UVC 1.0 controls supported",
+        "no progressive MJPEG mode at selected size", "frame or interval limits unsupported",
+        "no matching interval-1 isochronous IN alternate"
+    };
+    return (unsigned)result < sizeof(descriptions)/sizeof(descriptions[0]) ?
+           descriptions[result] : "unknown descriptor result";
+}
+
+int uvc_control_payload_length(int result, unsigned requested)
+{
+    if (result < 0)
+        return result;
+    if (result < 8 || (unsigned)(result - 8) > requested)
+        return -1;
+    return result - 8;
+}
+
+bool uvc_interval_supported(const UvcMode *mode, uint32_t interval)
+{
+    if (!interval)
+        return false;
+    if (mode->interval_count) {
+        for (unsigned i = 0; i < mode->interval_count; ++i)
+            if (mode->intervals[i] == interval)
+                return true;
+        return false;
+    }
+    return mode->interval_step && interval >= mode->interval_min &&
+           interval <= mode->interval_max &&
+           (interval - mode->interval_min) % mode->interval_step == 0;
+}
+
+/* Called only after the entire configuration walk has been bounded. */
+static size_t class_length(const uint8_t *data, size_t length, size_t offset)
+{
+    size_t start = offset;
+    while (offset < length && data[offset + 1] == 0x24)
+        offset += data[offset];
+    return offset - start;
+}
+
+UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned target,
+                         unsigned width, unsigned height, UvcMode *mode)
 {
     memset(mode, 0, sizeof(*mode));
-    if (length < 9 || data[0] != 9 || data[1] != 2 ||
-        uvc_le16(data + 2) != length)
-        return false;
-    mode->configuration = data[5];
-    unsigned interface = 255, alternate = 0, subclass = 0, format = 0;
-    bool video = false, found = false;
-    for (size_t offset = 9; offset < length;) {
-        if (length - offset < 2)
-            return false;
+    if (!data || length < 9 || data[0] != 9 || data[1] != 2 || !data[5] ||
+        uvc_le16(data + 2) != length || target > 255)
+        return UVC_MALFORMED;
+    if (!((width == 320 && height == 240) || (width == 640 && height == 480)))
+        return UVC_NO_MODE;
+    /* Validate the whole descriptor walk before subsequent bounded passes. */
+    for (size_t offset = 9; offset < length; offset += data[offset]) {
+        if (length - offset < 2 || data[offset] < 2 || data[offset] > length - offset)
+            return UVC_MALFORMED;
         const uint8_t *d = data + offset;
-        size_t n = d[0];
-        if (n < 2 || n > length - offset)
-            return false;
+        if ((d[1] == 4 && d[0] < 9) || (d[1] == 5 && d[0] < 7) ||
+            (d[1] == 0x24 && d[0] < 3))
+            return UVC_MALFORMED;
+    }
+    unsigned interface = 256, alternate = 0, subclass = 0, association = 0;
+    bool video = false;
+    for (size_t offset = 9; offset < length; offset += data[offset]) {
+        const uint8_t *d = data + offset;
         if (d[1] == 4) {
-            if (n < 9)
-                return false;
-            interface = d[2];
-            alternate = d[3];
-            video = d[5] == 14;
-            subclass = d[6];
-            format = 0;
-        } else if (d[1] == 0x24 && video) {
-            if (n < 3)
-                return false;
-            if (subclass == 1 && d[2] == 1 && n >= 5)
-                mode->version = uvc_le16(d + 3);
-            if (subclass == 2 && alternate == 0) {
-                if (d[2] == 6 && n >= 11)
-                    format = d[3];
-                else if (d[2] == 4 || d[2] == 0x10)
-                    format = 0;
-                else if (d[2] == 7 && format && n >= 26 && !found &&
-                         uvc_le16(d + 5) == width && uvc_le16(d + 7) == height) {
-                    mode->interface = (uint8_t)interface;
-                    mode->format = (uint8_t)format;
-                    mode->frame = d[3];
-                    mode->width = (uint16_t)width;
-                    mode->height = (uint16_t)height;
-                    mode->max_frame = uvc_le32(d + 17);
-                    mode->interval = uvc_le32(d + 21);
-                    found = true;
+            interface = d[2]; alternate = d[3]; subclass = d[6];
+            video = d[5] == 14 && d[7] == 0;
+        } else if (d[1] == 0x24 && video && subclass == 1 && alternate == 0 && d[2] == 1) {
+            if (d[0] < 12 || d[0] != 12u + d[11] ||
+                uvc_le16(d + 5) != class_length(data, length, offset))
+                return UVC_MALFORMED;
+            for (unsigned i = 0; i < d[11]; ++i) {
+                if (d[12 + i] == target) {
+                    ++association;
+                    mode->control_interface = (uint8_t)interface;
+                    mode->version = uvc_le16(d + 3);
                 }
             }
-        } else if (d[1] == 5 && found && video && subclass == 2 &&
-                   interface == mode->interface && alternate) {
-            if (n < 7)
-                return false;
-            if ((d[2] & 0x80) && (d[3] & 3) == 1 && d[6] == 1) {
-                unsigned raw = uvc_le16(d + 4);
-                unsigned multiplier = (raw >> 11) & 3;
-                if (multiplier == 3 || !(raw & 0x7ff) || (raw & 0xe000) ||
-                    mode->alt_count == WC04_MAX_ALTS)
-                    return false;
-                UvcAlternate *a = &mode->alts[mode->alt_count++];
-                a->number = (uint8_t)alternate;
-                a->endpoint = d[2];
-                a->capacity = (uint16_t)((raw & 0x7ff) * (multiplier + 1));
-                mode->endpoint = d[2];
+        }
+    }
+    if (association != 1)
+        return UVC_ASSOCIATION;
+    if (mode->version != 0x100)
+        return UVC_VERSION;
+    mode->configuration = data[5];
+    mode->interface = (uint8_t)target;
+    unsigned format = 0, headers = 0, zero_alts = 0;
+    bool found = false, progressive = false;
+    uint8_t formats[256] = {0}, frames[256] = {0};
+    for (size_t offset = 9; offset < length; offset += data[offset]) {
+        const uint8_t *d = data + offset;
+        if (d[1] == 4) {
+            interface = d[2]; alternate = d[3]; subclass = d[6];
+            video = d[5] == 14 && d[7] == 0;
+            format = 0;
+            if (video && subclass == 2 && interface == target && alternate == 0)
+                ++zero_alts;
+        } else if (d[1] == 0x24 && video && subclass == 2 &&
+                   interface == target && alternate == 0) {
+            if (d[2] == 1) {
+                if (d[0] < 13 || !d[3] || !d[12] ||
+                    d[0] != 13u + (unsigned)d[3] * d[12] ||
+                    uvc_le16(d + 4) != class_length(data, length, offset) ||
+                    !(d[6] & 0x80) || (d[6] & 0x70) || !(d[6] & 15))
+                    return UVC_MALFORMED;
+                ++headers;
+                mode->endpoint = d[6];
+                format = 0;
+            } else if (d[2] == 6) {
+                if (d[0] != 11 || !d[3] || !d[4] || !d[6] || formats[d[3]])
+                    return UVC_MALFORMED;
+                formats[d[3]] = 1;
+                format = d[3];
+                progressive = !(d[9] & 1);
+                memset(frames, 0, sizeof(frames));
+            } else if (d[2] == 7 && format) {
+                if (d[0] < 26 || !d[3] || frames[d[3]])
+                    return UVC_MALFORMED;
+                frames[d[3]] = 1;
+                unsigned count = d[25];
+                if (d[0] != (count ? 26u + 4u * count : 38u))
+                    return UVC_MALFORMED;
+                if (found || !progressive || uvc_le16(d + 5) != width || uvc_le16(d + 7) != height)
+                    continue;
+                if (count > UVC_MAX_INTERVALS)
+                    return UVC_LIMIT;
+                mode->format = (uint8_t)format;
+                mode->frame = d[3];
+                mode->width = (uint16_t)width;
+                mode->height = (uint16_t)height;
+                mode->max_frame = uvc_le32(d + 17);
+                mode->interval = uvc_le32(d + 21);
+                mode->interval_count = count;
+                for (unsigned i = 0; i < count; ++i) {
+                    mode->intervals[i] = uvc_le32(d + 26 + 4*i);
+                    if (!mode->intervals[i])
+                        return UVC_LIMIT;
+                }
+                if (!count) {
+                    mode->interval_min = uvc_le32(d + 26);
+                    mode->interval_max = uvc_le32(d + 30);
+                    mode->interval_step = uvc_le32(d + 34);
+                    if (!mode->interval_min || mode->interval_min > mode->interval_max ||
+                        !mode->interval_step)
+                        return UVC_LIMIT;
+                }
+                if (!mode->max_frame || mode->max_frame > WC04_FRAME_CAPACITY ||
+                    !uvc_interval_supported(mode, mode->interval))
+                    return UVC_LIMIT;
+                found = true;
+            } else if (d[2] != 3 && d[2] != 0x0d) {
+                /* Unknown format/subtype must never inherit an MJPEG format index. */
+                format = 0;
             }
         }
-        offset += n;
     }
-    return found && mode->version == 0x100 && mode->alt_count &&
-           mode->interval && mode->max_frame &&
-           mode->max_frame <= WC04_FRAME_CAPACITY;
+    if (headers != 1 || zero_alts != 1)
+        return UVC_MALFORMED;
+    if (!found)
+        return UVC_NO_MODE;
+    bool seen_alts[256] = {false};
+    for (size_t offset = 9; offset < length; offset += data[offset]) {
+        const uint8_t *d = data + offset;
+        if (d[1] == 4) {
+            interface = d[2]; alternate = d[3]; subclass = d[6];
+            video = d[5] == 14 && d[7] == 0;
+        } else if (d[1] == 5 && video && subclass == 2 && interface == target &&
+                   alternate && d[2] == mode->endpoint && (d[3] & 3) == 1 && !(d[3] & 0xf0) && d[6] == 1) {
+            unsigned raw = uvc_le16(d + 4), packet = raw & 0x7ff;
+            unsigned multiplier = (raw >> 11) & 3;
+            if (!packet || packet > 1024 || multiplier == 3 || (raw & 0xe000) || seen_alts[alternate])
+                return UVC_MALFORMED;
+            if (mode->alt_count == WC04_MAX_ALTS)
+                return UVC_LIMIT;
+            seen_alts[alternate] = true;
+            mode->alts[mode->alt_count++] = (UvcAlternate){
+                (uint8_t)alternate, d[2], (uint16_t)(packet * (multiplier + 1))
+            };
+        }
+    }
+    return mode->alt_count ? UVC_OK : UVC_TRANSPORT;
 }
 
 bool uvc_alternate(const UvcMode *mode, uint32_t payload, UvcAlternate *alt)
@@ -123,6 +238,8 @@ bool uvc_negotiate(const UvcMode *mode, UvcAlternate *alt,
                    uint8_t data[UVC_PROBE_LENGTH], UvcControlTransfer transfer,
                    void *context)
 {
+    if (mode->version != 0x100 || !uvc_interval_supported(mode, mode->interval))
+        return false;
     const uint8_t seeds[] = {UVC_GET_MAX, UVC_GET_DEF, UVC_GET_CUR};
     bool seeded = false;
     for (size_t i = 0; i < sizeof(seeds); ++i) {
@@ -142,7 +259,8 @@ bool uvc_negotiate(const UvcMode *mode, UvcAlternate *alt,
         return false;
     uint32_t max_frame = uvc_le32(data + 18);
     if (data[2] != mode->format || data[3] != mode->frame ||
-        !uvc_le32(data + 4) || !max_frame || max_frame > WC04_FRAME_CAPACITY ||
+        !uvc_interval_supported(mode, uvc_le32(data + 4)) || !max_frame ||
+        max_frame > mode->max_frame || max_frame > WC04_FRAME_CAPACITY ||
         !uvc_alternate(mode, uvc_le32(data + 22), alt))
         return false;
     /* Commit exactly the accepted GET_CUR block, including adjusted fields. */

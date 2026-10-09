@@ -12,6 +12,7 @@
 #define WC04_FRAME_CAPACITY (640u * 480u * 2u)
 #define WC04_MAX_ALTS 16
 #define UVC_PROBE_LENGTH 26
+#define UVC_MAX_INTERVALS 32
 
 enum {
     UVC_SET_CUR = 0x01,
@@ -32,9 +33,11 @@ typedef struct {
 } UvcAlternate;
 
 typedef struct {
-    uint8_t configuration, interface, format, frame, endpoint;
+    uint8_t configuration, interface, control_interface, format, frame, endpoint;
     uint16_t width, height, version;
     uint32_t interval, max_frame;
+    unsigned interval_count;
+    uint32_t intervals[UVC_MAX_INTERVALS], interval_min, interval_max, interval_step;
     UvcAlternate alts[WC04_MAX_ALTS];
     size_t alt_count;
 } UvcMode;
@@ -57,8 +60,16 @@ typedef struct {
 uint16_t uvc_le16(const uint8_t *p);
 uint32_t uvc_le32(const uint8_t *p);
 void uvc_put32(uint8_t *p, uint32_t value);
-bool uvc_parse(const uint8_t *data, size_t length, unsigned width,
-               unsigned height, UvcMode *mode);
+typedef enum {
+    UVC_OK, UVC_MALFORMED, UVC_ASSOCIATION, UVC_VERSION,
+    UVC_NO_MODE, UVC_LIMIT, UVC_TRANSPORT
+} UvcParseResult;
+
+UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned interface,
+                         unsigned width, unsigned height, UvcMode *mode);
+const char *uvc_parse_description(UvcParseResult result);
+int uvc_control_payload_length(int result, unsigned requested);
+bool uvc_interval_supported(const UvcMode *mode, uint32_t interval);
 bool uvc_alternate(const UvcMode *mode, uint32_t payload, UvcAlternate *alt);
 void uvc_probe_select(uint8_t data[UVC_PROBE_LENGTH], const UvcMode *mode);
 bool uvc_negotiate(const UvcMode *mode, UvcAlternate *alt,

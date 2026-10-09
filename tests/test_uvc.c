@@ -8,10 +8,11 @@
 #include <string.h>
 
 static const uint8_t fixture[] = {
-    9, 2, 105, 0, 2, 1, 0, 0x80, 250,
+    9, 2, 119, 0, 2, 1, 0, 0x80, 250,
     9, 4, 0, 0, 0, 14, 1, 0, 0,
     13, 0x24, 1, 0, 1, 13, 0, 0xc0, 0xe1, 0xe4, 0, 1, 1,
     9, 4, 1, 0, 0, 14, 2, 0, 0,
+    14, 0x24, 1, 1, 63, 0, 0x81, 0, 1, 0, 0, 0, 1, 0,
     11, 0x24, 6, 1, 1, 1, 1, 0, 0, 0, 0,
     38, 0x24, 7, 2, 0, 0x40, 1, 0xf0, 0,
     0, 0, 0, 0, 0, 0, 0, 0,
@@ -25,8 +26,8 @@ static void test_descriptors(void)
 {
     UvcMode mode;
     UvcAlternate alt = {0};
-    assert(sizeof(fixture) == 105);
-    assert(uvc_parse(fixture, sizeof(fixture), 320, 240, &mode));
+    assert(sizeof(fixture) == 119);
+    assert(uvc_parse(fixture, sizeof(fixture), 1, 320, 240, &mode) == UVC_OK);
     assert(mode.configuration == 1 && mode.interface == 1);
     assert(mode.format == 1 && mode.frame == 2 && mode.endpoint == 0x81);
     assert(mode.version == 0x100 && mode.max_frame == 115200);
@@ -39,20 +40,20 @@ static void test_descriptors(void)
     assert(probe[0] == 1 && probe[2] == 1 && probe[3] == 2);
     assert(uvc_le32(probe + 4) == 333333);
     assert(uvc_le32(probe + 22) == 0);
-    assert(!uvc_parse(fixture, sizeof(fixture), 640, 480, &mode));
+    assert(uvc_parse(fixture, sizeof(fixture), 1, 640, 480, &mode) != UVC_OK);
     for (size_t length = 0; length < sizeof(fixture); ++length)
-        assert(!uvc_parse(fixture, length, 320, 240, &mode));
+        assert(uvc_parse(fixture, length, 1, 320, 240, &mode) != UVC_OK);
     uint8_t damaged[sizeof(fixture)];
     memcpy(damaged, fixture, sizeof(fixture));
     damaged[9] = 0;
-    assert(!uvc_parse(damaged, sizeof(damaged), 320, 240, &mode));
+    assert(uvc_parse(damaged, sizeof(damaged), 1, 320, 240, &mode) != UVC_OK);
     memcpy(damaged, fixture, sizeof(fixture));
-    damaged[103] = 0x1a;
-    assert(!uvc_parse(damaged, sizeof(damaged), 320, 240, &mode));
+    damaged[117] = 0x1a;
+    assert(uvc_parse(damaged, sizeof(damaged), 1, 320, 240, &mode) != UVC_OK);
     memcpy(damaged, fixture, sizeof(fixture));
-    damaged[103] = 0x13;
-    damaged[102] = 0xfc;
-    assert(uvc_parse(damaged, sizeof(damaged), 320, 240, &mode));
+    damaged[117] = 0x13;
+    damaged[116] = 0xfc;
+    assert(uvc_parse(damaged, sizeof(damaged), 1, 320, 240, &mode) == UVC_OK);
     assert(mode.alts[0].capacity == 3060);
     mode.alt_count = 3;
     mode.alts[0] = (UvcAlternate){6, 0x81, 3060};
@@ -124,7 +125,7 @@ static void test_live_descriptors(void)
     for (unsigned i = 0; i < 2; ++i) {
         UvcMode mode;
         UvcAlternate alt;
-        assert(uvc_parse(data, sizeof(data), widths[i], widths[i] * 3 / 4, &mode));
+        assert(uvc_parse(data, sizeof(data), 1, widths[i], widths[i] * 3 / 4, &mode) == UVC_OK);
         assert(mode.configuration == 1 && mode.interface == 1 && mode.format == 1);
         assert(mode.frame == (i == 0 ? 2 : 1));
         assert(mode.interval == 333333 && mode.alt_count == 6);
@@ -208,7 +209,7 @@ static void test_mutations(void)
             unsigned index = random_byte() % sizeof(data);
             data[index] = random_byte();
         }
-        (void)uvc_parse(data, sizeof(data), 320, 240, &mode);
+        (void)uvc_parse(data, sizeof(data), 1, 320, 240, &mode);
         size_t length = random_byte() % sizeof(data);
         (void)uvc_packet(&frame, data, length);
         assert(frame.size <= frame.capacity);

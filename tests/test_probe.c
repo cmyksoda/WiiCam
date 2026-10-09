@@ -62,7 +62,7 @@ static void test_mode(unsigned width, unsigned height)
     assert(fread(descriptors, 1, sizeof(descriptors), file) == sizeof(descriptors));
     fclose(file);
     UvcMode mode;
-    assert(uvc_parse(descriptors, sizeof(descriptors), width, height, &mode));
+    assert(uvc_parse(descriptors, sizeof(descriptors), 1, width, height, &mode) == UVC_OK);
 
     uint8_t seed[UVC_PROBE_LENGTH];
     for (unsigned i = 0; i < sizeof(seed); ++i)
@@ -92,6 +92,17 @@ static void test_mode(unsigned width, unsigned height)
         {UVC_SET_CUR, UVC_VS_COMMIT, 26, negotiated}
     };
     run(&mode, normal, 4, true);
+    /* Newer control versions must fail before touching the 26-byte bank. */
+    for (unsigned version = 0x110; version <= 0x150; version += 0x40) {
+        UvcMode newer = mode;
+        newer.version = version;
+        run(&newer, NULL, 0, false);
+    }
+
+    /* A different advertised continuous interval is accepted and committed intact. */
+    uvc_put32(negotiated + 4, 666666);
+    run(&mode, normal, 4, true);
+    uvc_put32(negotiated + 4, 333333);
 
     const Step fallback[] = {
         {UVC_GET_MAX, UVC_VS_PROBE, 2, seed},
@@ -113,7 +124,7 @@ static void test_mode(unsigned width, unsigned height)
     };
     run(&mode, unavailable, 3, false);
 
-    const int failures[] = {-1, 0, 18, 25, 27};
+    const int failures[] = {-1, 0, 18, 25, 27, 34, 48};
     for (unsigned step = 1; step < 4; ++step) {
         for (unsigned i = 0; i < sizeof(failures) / sizeof(failures[0]); ++i) {
             normal[step].result = failures[i];
@@ -122,7 +133,7 @@ static void test_mode(unsigned width, unsigned height)
         normal[step].result = 26;
     }
 
-    for (unsigned fault = 0; fault < 7; ++fault) {
+    for (unsigned fault = 0; fault < 8; ++fault) {
         uint8_t bad[UVC_PROBE_LENGTH];
         memcpy(bad, negotiated, sizeof(bad));
         switch (fault) {
@@ -133,6 +144,7 @@ static void test_mode(unsigned width, unsigned height)
         case 4: uvc_put32(bad + 18, WC04_FRAME_CAPACITY + 1); break;
         case 5: uvc_put32(bad + 22, 0); break;
         case 6: uvc_put32(bad + 22, 4000); break;
+        case 7: uvc_put32(bad + 4, 333334); break;
         }
         normal[2].bytes = bad;
         run(&mode, normal, 3, false);

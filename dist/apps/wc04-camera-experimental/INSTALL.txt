@@ -1,0 +1,54 @@
+WC04 Camera 0.3.1 USB EXPERIMENTAL - PRIVATE LOCAL TEST ONLY
+
+Copy apps/wc04-camera-experimental to the SD card's apps directory.
+This separate app folder preserves an installed baseline WC04 app.
+Requires Wii Remote, HBC under IOS58, writable FAT SD for saving.
+
+Experimental subset: single-configuration UVC 1.0 cameras offering progressive
+MJPEG at 320x240 or 640x480, isochronous IN with bInterval=1, advertised
+frame buffer at most 614400 bytes and a supported descriptor default interval.
+WC04 is preferred when connected. Otherwise the first supported interface wins.
+Use one camera; change the menu size explicitly if that size is unsupported.
+No actual speed is inferred from the USB version. Non-WC04 cameras, full-speed
+operation, hubs and vWii are unverified. No guarantee of frame rate or compatibility.
+Newer UVC 1.1/1.5 controls, bulk, YUYV, interlaced modes, proprietary protocols,
+audio, multiple configurations and automatic reconnect are unsupported.
+Camera check reads descriptors only; supported descriptors do not prove video.
+The default frame interval is used; there is no guessed frame rate or fallback.
+No configuration changes, device firmware, custom IOS or system modifications.
+Insert SD before launch. The app never installs/reloads IOS or writes NAND.
+
+Menu: A opens live view; 1 changes resolution; 2 checks the camera.
++ switches Photo / Video. Left/right selects timer Off / 3 / 5 / 10 seconds.
+Photo: A captures or starts countdown; B cancels countdown, otherwise menu.
+Review: A returns to live, B returns to menu.
+Video: A starts, A or B stops and saves. Silent sampled MJPEG AVI only.
+HOME exits, stopping camera and finalizing a video first.
+No signal: A retries after timeout/failure; B returns to menu.
+
+Photos: sd:/DCIM/100WC04/WC04####.JPG
+Video: sd:/wc04-camera/videos/VID####.AVI
+Log: sd:/wc04-camera/session.log (appended)
+Existing files are never overwritten. Failed partial output from the current
+attempt is removed best-effort; failed media may prevent cleanup. Power loss can leave a partial AVI. 9999 names per type.
+
+Video stops at 60 seconds, 128 MiB, or 3600 accepted frames. There is no promised
+frame rate or audio. SD/CPU load may skip frames. Saved duration follows elapsed
+time, but sampled frames play evenly, so motion may be jerky. Computer playback
+was host-tested with FFmpeg; Photo Channel video playback is not promised.
+
+No decoded frame for 1 second shows full SMPTE bars; 10 seconds stops the stream.
+Timer or pending shutter is canceled by lost signal. If USB drain waits, unplug the camera.
+A wedged IOS or SD operation can still block; do not remove SD while saving.
+
+This experiment is host-tested and compiled, NOT verified on physical Wii.
+The old WC04 0.1.3 still-photo evidence does not certify this build or other devices.
+Physical testing is deferred. Keep the baseline ZIP for later comparison.
+
+Temporary webcam art: Giuseppe Ramos (stockgiu) / Vecteezy.com.
+https://www.vecteezy.com/vector-art/5252064-webcam-device-technology
+See licenses/Vecteezy-License-Information.pdf and licenses/ASSET-PROVENANCE.txt.
+
+This binary embeds glyph bitmaps made from locally installed Rodin NTLG Pro DB.
+Public redistribution rights are NOT established. This package is only for
+Jaxi's private local test. The full OTF is not bundled. See licenses/UI-font.txt.

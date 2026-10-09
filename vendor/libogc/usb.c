@@ -1,4 +1,4 @@
-/* WC04 Camera altered version: added two USBv5 vendor ioctl wrappers at EOF.
+/* WC04 Camera altered version: added bounded descriptor access and two USBv5 control wrappers at EOF.
  * All existing libogc USB functions are unchanged. See vendor/libogc/README.md.
  */
 /*-------------------------------------------------------------
@@ -1547,6 +1547,28 @@ s32 WC04_CancelIso(s32 device_id, u8 endpoint)
     input[0] = device_id;
     ((u8 *)input)[8] = endpoint;
     s32 result = IOS_Ioctl(ven_host->fd, USBV5_IOCTL_CANCELENDPOINT, input, 32, NULL, 0);
+    iosFree(hId, input);
+    return result;
+}
+#endif
+
+#if defined(HW_RVL)
+/* Same GETDEVPARAMS operation used by USBV5_GetDescriptors to prime IOS.
+ * Return the fixed raw view for the application's bounded parser; do not follow
+ * untrusted descriptor counts through libogc's compact 192-byte reply.
+ * parameters must be a 32-byte aligned MEM2 bank of at least 192 bytes. */
+s32 WC04_GetInterfaceParameters(s32 device_id, u8 *parameters)
+{
+    if (!parameters || ((uintptr_t)parameters & 31) ||
+        __find_device_on_host(ven_host, device_id) < 0)
+        return IPC_EINVAL;
+    u32 *input = iosAlloc(hId, 32);
+    if (!input)
+        return IPC_ENOMEM;
+    memset(input, 0, 32);
+    input[0] = device_id;
+    memset(parameters, 0, 192);
+    s32 result = IOS_Ioctl(ven_host->fd, USBV5_IOCTL_GETDEVPARAMS, input, 32, parameters, 192);
     iosFree(hId, input);
     return result;
 }
