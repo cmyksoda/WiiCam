@@ -725,7 +725,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWC04 Camera 0.3.1 UVC EXPERIMENTAL local test - IOS %u\n", IOS_GetVersion());
+    report("\nWC04 Camera 0.3.2 UVC EXPERIMENTAL local test - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report("0.1.3 captures and Photo Channel playback confirmed by tester; new viewfinder pending hardware test.\n");
     bool usb_ready = false;

@@ -3,6 +3,7 @@
  */
 #include "camera.h"
 #include <string.h>
+#include <stdio.h>
 
 static void report(const CameraOps *ops, const CameraEntry *entry, const char *message)
 {
@@ -10,20 +11,35 @@ static void report(const CameraOps *ops, const CameraEntry *entry, const char *m
         ops->report(ops->context, entry, message);
 }
 
-static bool describe(const CameraEntry *entry, const uint8_t *data, uint8_t *configuration)
+/* IOS GETDEVPARAMS returns CPU-order (big-endian) descriptor fields.
+ * Raw USB GET_DESCRIPTOR and UVC controls are different: they stay little-endian.
+ * See the pinned libogc USBV5_GetDescriptors and Dolphin VEN GetDeviceInfo paths. */
+static uint16_t ios_be16(const uint8_t *p)
 {
-    /* USBV5 GETDEVPARAMS: 20-byte IOS prefix, then word-aligned standard
-     * device/config/interface descriptors. Read only the bounded first view,
-     * unlike the SDK parser which follows device counts through this reply. */
+    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
+
+static const char *describe(const CameraEntry *entry, const uint8_t *data,
+                            uint8_t *configuration)
+{
+    /* Read only the bounded first view, not counts beyond the 192-byte reply. */
     const uint8_t *device = data + 20, *config = data + 40, *interface = data + 52;
-    if (device[0] != 18 || device[1] != 1 || device[17] != 1 ||
-        uvc_le16(device + 8) != entry->vid || uvc_le16(device + 10) != entry->pid ||
-        config[0] != 9 || config[1] != 2 || !config[4] || !config[5] ||
-        interface[0] != 9 || interface[1] != 4 || interface[2] != entry->interface ||
-        interface[5] != 14 || interface[6] != 2)
-        return false;
+    if (device[0] != 18 || device[1] != 1)
+        return "invalid IOS device descriptor header";
+    if (device[17] != 1)
+        return "unsupported IOS configuration count (requires one)";
+    if (ios_be16(device + 8) != entry->vid || ios_be16(device + 10) != entry->pid)
+        return "IOS vendor/product identity differs from enumeration";
+    if (config[0] != 9 || config[1] != 2 || !config[4] || !config[5])
+        return "invalid IOS configuration descriptor";
+    if (interface[0] != 9 || interface[1] != 4)
+        return "invalid IOS interface descriptor header";
+    if (interface[2] != entry->interface)
+        return "IOS interface number differs from enumeration";
+    if (interface[5] != 14 || interface[6] != 2)
+        return "not a VideoStreaming interface (requires class 0e/subclass 02)";
     *configuration = config[5];
-    return true;
+    return NULL;
 }
 
 bool camera_find(const CameraEntry *entries, size_t count, unsigned width, unsigned height,
@@ -47,14 +63,29 @@ bool camera_find(const CameraEntry *entries, size_t count, unsigned width, unsig
             }
             memset(scratch, 0, CAMERA_IOS_PARAMETERS);
             uint8_t configuration = 0;
-            if (ops->parameters(ops->context, opened, scratch) != 0 ||
-                !describe(entry, scratch, &configuration)) {
-                report(ops, entry, "not a valid single-configuration VideoStreaming interface");
+            int result = ops->parameters(ops->context, opened, scratch);
+            char detail[160];
+            if (result != 0) {
+                snprintf(detail, sizeof(detail), "IOS GETDEVPARAMS failed: %d", result);
+                report(ops, entry, detail);
+                ops->close(ops->context, opened);
+                continue;
+            }
+            /* Numeric descriptor metadata only; no strings, serials or image data. */
+            snprintf(detail, sizeof(detail),
+                     "IOS descriptor fields: id=%04x:%04x configs=%u config=%u interface=%u class=%02x subclass=%02x",
+                     (unsigned)ios_be16(scratch + 28), (unsigned)ios_be16(scratch + 30),
+                     (unsigned)scratch[37], (unsigned)scratch[45], (unsigned)scratch[54],
+                     (unsigned)scratch[57], (unsigned)scratch[58]);
+            report(ops, entry, detail);
+            const char *reason = describe(entry, scratch, &configuration);
+            if (reason) {
+                report(ops, entry, reason);
                 ops->close(ops->context, opened);
                 continue;
             }
             memset(scratch, 0, CAMERA_CONFIG_CAPACITY);
-            int result = ops->read(ops->context, opened, 8, 0, 1, scratch);
+            result = ops->read(ops->context, opened, 8, 0, 1, scratch);
             if (uvc_control_payload_length(result, 1) != 1 || scratch[0] != configuration) {
                 report(ops, entry, "configuration inactive or unreadable; no configuration change attempted");
                 ops->close(ops->context, opened);

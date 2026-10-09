@@ -72,7 +72,7 @@ def main():
     data = (APP / "boot.dol").read_bytes()
     validate_dol(data)
     (APP / "licenses/WC04-GPLv3.txt").write_bytes((ROOT / "LICENSE").read_bytes())
-    archive = ROOT / "dist/WC04-Camera-0.3.1-uvc-experimental-local-test.zip"
+    archive = ROOT / "dist/WC04-Camera-0.3.2-uvc-experimental-local-test.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
         for name in FILES:
             package.write(APP / name, f"apps/wc04-camera-experimental/{name}")

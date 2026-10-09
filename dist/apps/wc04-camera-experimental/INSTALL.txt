@@ -1,7 +1,11 @@
-WC04 Camera 0.3.1 USB EXPERIMENTAL - PRIVATE LOCAL TEST ONLY
+WC04 Camera 0.3.2 USB EXPERIMENTAL - PRIVATE LOCAL TEST ONLY
 
 Copy apps/wc04-camera-experimental to the SD card's apps directory.
-This separate app folder preserves an installed baseline WC04 app.
+Replace the existing experimental folder's contents with this version; keep the
+baseline apps/wc04-camera folder and earlier ZIPs. Confirm 0.3.2 in HBC.
+This build fixes compact IOS vendor/product byte order and improves rejection
+logs. Other-camera operation is still unverified; later compatibility limits
+may remain. Existing photographs/videos need not be deleted.
 Requires Wii Remote, HBC under IOS58, writable FAT SD for saving.
 
 Experimental subset: single-configuration UVC 1.0 cameras offering progressive
