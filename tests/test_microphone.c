@@ -22,14 +22,14 @@ static Fixture microphone(void)
 }
 
 typedef struct {
-    unsigned calls, fault;
+    unsigned calls, fault, endpoint;
 } Control;
 
 static int control(void *context, uint8_t type, uint8_t request, uint16_t value, uint16_t index,
                    uint8_t *data, unsigned length)
 {
     Control *c = context;
-    assert(value == 0x100 && index == 0x84 && length == 3);
+    assert(value == 0x100 && index == (c->endpoint ? c->endpoint : 0x84) && length == 3);
     assert(type == (c->calls ? 0xa2 : 0x22) && request == (c->calls ? 0x81 : 1));
     if (!c->calls)
         assert(data[0] == 0x80 && data[1] == 0x3e && data[2] == 0);
@@ -43,6 +43,8 @@ static int control(void *context, uint8_t type, uint8_t request, uint16_t value,
     if (c->fault == 2 && !step) return 2;
     if (c->fault == 3 && step) return -4;
     if (c->fault == 4 && step) return 2;
+    if (c->fault == 6 && step) return -7102;
+    if (c->fault == 7 && !step) return -7102;
     return 3;
 }
 
@@ -58,19 +60,40 @@ int main(void)
     for (size_t n = 0; n < f.length; ++n)
         assert(!microphone_mode(f.data, n, &mode));
     assert(microphone_mode(f.data, f.length, &mode));
+    CameraEntry entry = {.vid = 0x0c45, .pid = 0x6366, .interface = 3};
     uint8_t data[32];
-    for (unsigned fault = 0; fault <= 5; ++fault) {
+    for (unsigned fault = 0; fault <= 7; ++fault) {
         Control state = {.fault = fault};
-        assert(microphone_set_rate(&mode, control, &state, data) == (fault == 0));
-        assert(state.calls == ((fault == 1 || fault == 2) ? 1u : 2u));
+        MicRateResult expected = fault == 0   ? MIC_RATE_OK
+                                 : fault == 6 ? MIC_RATE_UNREADABLE
+                                              : MIC_RATE_FAILED;
+        assert(microphone_set_rate(&entry, &mode, control, &state, data) == expected);
+        assert(state.calls == ((fault == 1 || fault == 2 || fault == 7) ? 1u : 2u));
+    }
+    for (unsigned n = 0; n < 10; ++n) {
+        CameraEntry other = entry;
+        UacMode changed = mode;
+        if (n == 0) other.vid ^= 1;
+        if (n == 1) other.pid ^= 1;
+        if (n == 2) other.interface ^= 1;
+        if (n == 3) changed.control_interface ^= 1;
+        if (n == 4) changed.interface ^= 1;
+        if (n == 5) changed.alternate ^= 2;
+        if (n == 6) changed.endpoint ^= 1;
+        if (n == 7) changed.packet_capacity += 2;
+        if (n == 8) changed.interval ^= 1;
+        Control state = {.fault = 6, .endpoint = changed.endpoint};
+        assert(microphone_set_rate(n == 9 ? NULL : &other, &changed, control, &state, data)
+               == MIC_RATE_FAILED);
+        assert(state.calls == 2);
     }
     mode.frequency_control = false;
-    assert(!microphone_set_rate(&mode, NULL, NULL, NULL));
+    assert(!microphone_set_rate(&entry, &mode, NULL, NULL, NULL));
     mode.rate_count = 1;
     mode.rates[0] = MIC_RATE;
-    assert(microphone_set_rate(&mode, NULL, NULL, NULL));
+    assert(microphone_set_rate(&entry, &mode, NULL, NULL, NULL));
     mode.channels = 2;
-    assert(!microphone_set_rate(&mode, NULL, NULL, NULL));
+    assert(!microphone_set_rate(&entry, &mode, NULL, NULL, NULL));
 
     MicEntry entries[3] = {{{(int32_t)0xe71e0042u, 0x0c45, 0x6366, 1}, 0x00420107},
                            {{(int32_t)0xe71c0042u, 0x0c45, 0x6366, 3}, 0x00420302},
@@ -128,6 +151,17 @@ int main(void)
     while (pcm.size < MIC_BYTES)
         assert(microphone_pcm_packet(&pcm, packet, 192, 192));
     assert(pcm.peak == 32768 && pcm.size == MIC_BYTES && !pcm.failed);
+    const uint64_t spans[] = {0, 1667, 3333, 4499, 4500, 5000, 5500, 5501, 10000, UINT64_MAX};
+    for (unsigned n = 0; n < sizeof(spans) / sizeof(*spans); ++n) {
+        assert(microphone_capture_valid(MIC_RATE_UNREADABLE, &pcm, spans[n])
+               == (spans[n] >= 4500 && spans[n] <= 5500));
+        assert(microphone_capture_valid(MIC_RATE_OK, &pcm, spans[n]));
+        assert(!microphone_capture_valid(MIC_RATE_FAILED, &pcm, spans[n]));
+    }
+    assert(!microphone_capture_valid(MIC_RATE_UNREADABLE, NULL, 5000));
+    pcm.failed = true;
+    assert(!microphone_capture_valid(MIC_RATE_UNREADABLE, &pcm, 5000));
+    pcm.failed = false;
     assert(samples[0] == 0xa5 && samples[MIC_BYTES + 1] == 0x5a);
     FILE *wav = fopen("build/test-microphone.wav", "wb+");
     assert(wav && microphone_wav(wav, &pcm) && fflush(wav) == 0);
@@ -146,10 +180,12 @@ int main(void)
         assert(pcm.failed == !valid);
     }
     microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
+    assert(!microphone_capture_valid(MIC_RATE_OK, &pcm, 5000));
+    assert(!microphone_capture_valid(MIC_RATE_UNREADABLE, &pcm, 5000));
     FILE *partial = tmpfile();
     assert(partial && !microphone_wav(partial, &pcm) && ftell(partial) == 0);
     fclose(partial);
     free(samples);
     puts(
-        "PASS: physical UAC fields, ambiguous/changed IOS pairing, rate controls, packet bounds, PCM/WAV and partial rejection");
+        "PASS: physical UAC fields, ambiguous/changed IOS pairing, strict rate controls, observed readback exception, timing guard, packet bounds, PCM/WAV and partial rejection");
 }

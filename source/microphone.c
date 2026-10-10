@@ -76,18 +76,39 @@ bool microphone_mode(const uint8_t *config, size_t length, UacMode *mode)
     return true;
 }
 
-bool microphone_set_rate(const UacMode *mode, MicControl control, void *context, uint8_t *data)
+MicRateResult microphone_set_rate(const CameraEntry *entry, const UacMode *mode, MicControl control,
+                                  void *context, uint8_t *data)
 {
-    if (!mode || mode->channels != 1 || !uac_rate_supported(mode, MIC_RATE)) return false;
-    if (!mode->frequency_control) return true;
-    if (!control || !data || !(mode->endpoint & 0x80)) return false;
+    if (!mode || mode->channels != 1 || !uac_rate_supported(mode, MIC_RATE)) return MIC_RATE_FAILED;
+    if (!mode->frequency_control) return MIC_RATE_OK;
+    if (!control || !data || !(mode->endpoint & 0x80)) return MIC_RATE_FAILED;
     data[0] = MIC_RATE & 255;
     data[1] = MIC_RATE >> 8;
     data[2] = 0;
-    if (control(context, 0x22, 1, 0x0100, mode->endpoint, data, 3) != 3) return false;
+    if (control(context, 0x22, 1, 0x0100, mode->endpoint, data, 3) != 3) return MIC_RATE_FAILED;
     memset(data, 0, 3);
-    if (control(context, 0xa2, 0x81, 0x0100, mode->endpoint, data, 3) != 3) return false;
-    return ((uint32_t)data[0] | (uint32_t)data[1] << 8 | (uint32_t)data[2] << 16) == MIC_RATE;
+    int result = control(context, 0xa2, 0x81, 0x0100, mode->endpoint, data, 3);
+    /* Observed twice on 0c45:6366: SET succeeds, GET fails before streaming.
+     * Keep this diagnostic exception separate from a verified rate. */
+    if (result == -7102 && entry && entry->vid == 0x0c45 && entry->pid == 0x6366
+        && entry->interface == 3 && mode->control_interface == 2 && mode->interface == 3
+        && mode->alternate == 1 && mode->endpoint == 0x84 && mode->packet_capacity == 192
+        && mode->interval == 4)
+        return MIC_RATE_UNREADABLE;
+    if (result != 3) return MIC_RATE_FAILED;
+    uint32_t rate = (uint32_t)data[0] | (uint32_t)data[1] << 8 | (uint32_t)data[2] << 16;
+    return rate == MIC_RATE ? MIC_RATE_OK : MIC_RATE_FAILED;
+}
+
+bool microphone_capture_valid(MicRateResult rate, const MicPcm *pcm, uint64_t span_ms)
+{
+    if (!pcm || pcm->failed || !pcm->data || pcm->size != MIC_BYTES) return false;
+    if (rate == MIC_RATE_OK) return true;
+    /* A 10% timing window allows queued batches and scheduling jitter, while
+     * rejecting a nominal five-second WAV captured at a different advertised rate.
+     * This is a diagnostic plausibility check, not clock-rate verification. */
+    return rate == MIC_RATE_UNREADABLE && span_ms >= MIC_SECONDS * 900u
+           && span_ms <= MIC_SECONDS * 1100u;
 }
 
 void microphone_pcm_init(MicPcm *pcm, uint8_t *data, size_t capacity)

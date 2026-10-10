@@ -780,6 +780,7 @@ typedef struct {
     s32 handle;
     UacMode mode;
     MicPcm pcm;
+    CameraEntry entry;
     uint64_t start, last_input, first_packet, last_packet;
     unsigned width, height;
 } MicTest;
@@ -902,6 +903,7 @@ static bool mic_open(s32 video_handle, const UvcMode *video_mode, MicTest *test)
         return false;
     }
     test->handle = opened;
+    test->entry = *entry;
     return true;
 }
 
@@ -922,10 +924,14 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
     if (!opened) return;
     uint8_t *samples = malloc(MIC_BYTES);
     microphone_pcm_init(&test.pcm, samples, MIC_BYTES);
-    bool configured = samples && WC04_SetAlternate(test.handle, 0) >= 0
-                      && WC04_SetAlternate(test.handle, test.mode.alternate) >= 0
-                      && microphone_set_rate(&test.mode, mic_control, &test, probe);
-    if (configured && !exit_requested) {
+    MicRateResult rate = MIC_RATE_FAILED;
+    if (samples && WC04_SetAlternate(test.handle, 0) >= 0
+        && WC04_SetAlternate(test.handle, test.mode.alternate) >= 0)
+        rate = microphone_set_rate(&test.entry, &test.mode, mic_control, &test, probe);
+    if (rate == MIC_RATE_UNREADABLE)
+        report("Microphone 0c45:6366 rate readback unavailable (-7102) after exact SET; "
+               "diagnostic capture requires 4500..5500 ms packet span before WAV save.\n");
+    if (rate != MIC_RATE_FAILED && !exit_requested) {
         report("Microphone test: interface=%u alt=%u endpoint=%02x PCM16 mono rate=%u "
                "packet=%u interval=%u; bus speed unknown; video idle.\n",
                test.mode.interface, test.mode.alternate, test.mode.endpoint, MIC_RATE,
@@ -956,8 +962,15 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
                                         : 0));
         report("Microphone queue: submitted=%u consumed=%u drained=%u failure=%d\n",
                queue.submitted, queue.consumed, queue.drained, queue.failure);
-        bool success = stop == ISO_PHOTO_READY && !exit_requested && !test.pcm.failed
-                       && test.pcm.size == MIC_BYTES;
+        uint64_t span_ms = test.first_packet && test.last_packet >= test.first_packet
+                               ? ticks_to_millisecs(test.last_packet - test.first_packet)
+                               : 0;
+        bool plausible = microphone_capture_valid(rate, &test.pcm, span_ms);
+        report("Microphone rate check: readback_unavailable=%u span_ms=%llu "
+               "approx_samples_per_second=%llu capture_valid=%u\n",
+               rate == MIC_RATE_UNREADABLE, (unsigned long long)span_ms,
+               (unsigned long long)(span_ms ? test.pcm.size * 500ull / span_ms : 0), plausible);
+        bool success = stop == ISO_PHOTO_READY && !exit_requested && plausible;
         if (success && ensure_directory("sd:/wc04-camera/audio")) {
             char path[128];
             FILE *file = storage_create("sd:/wc04-camera/audio", "MIC", "WAV", path, sizeof(path));
@@ -965,7 +978,7 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
             if (success) {
                 report("Microphone WAV saved: %s; 5 seconds by sample count; listen to verify.\n",
                        path);
-                snprintf(status, capacity, "%s saved - see log", strrchr(path, '/') + 1);
+                snprintf(status, capacity, "%s saved - verify audio", strrchr(path, '/') + 1);
             }
         } else
             success = false;
@@ -1017,7 +1030,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.1.0 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.1.1 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Bounded sizes and explicit 5-second microphone test enabled. Video recording is silent.\n");
