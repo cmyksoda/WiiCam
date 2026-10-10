@@ -48,7 +48,7 @@ enum {
 
 static unsigned scenario, starts, enables, captures, closes, probes;
 static uint64_t clock_ms, controls_ms;
-static bool exit_requested, silent;
+static bool exit_requested, silent, settling_test;
 static char events[32];
 static unsigned event_count;
 static uint8_t probe[UVC_PROBE_LENGTH];
@@ -188,6 +188,7 @@ static void usleep(unsigned microseconds)
 {
     assert(microseconds == 1000 && !enables);
     ++clock_ms;
+    if (settling_test) return;
     uint8_t data[32] = {0};
     if (scenario == STALL) {
         if (clock_ms == 500) atomic_store(&av_audio.stream.failed, true);
@@ -290,6 +291,17 @@ int main(void)
                                : scenario == PROBE_FAIL ? "IP"
                                                         : "IPV"));
     }
+    const unsigned settle_cases[] = {SUCCESS, B_CANCEL, HOME, EARLY_EXIT};
+    const unsigned settle_times[] = {50, 10, 10, 0};
+    for (unsigned n = 0; n < 4; ++n) {
+        reset();
+        settling_test = true;
+        scenario = settle_cases[n];
+        exit_requested = scenario == EARLY_EXIT;
+        assert(av_audio_wait_rate(clock_ms) == (scenario == SUCCESS));
+        assert(clock_ms == settle_times[n]);
+        assert(!starts && !probes && !enables && !captures && !closes);
+    }
     puts(
-        "PASS: actual startup: 22 audio readiness/order/control/failure/cancel scenarios and 4 unchanged silent negotiation paths");
+        "PASS: actual startup: 22 readiness/control/failure cases, 4 silent paths, 4 bounded settling/cancellation cases");
 }

@@ -33,6 +33,7 @@
 #include "av_recorder.h"
 
 #define FRAME_TIMEOUT_SECONDS 10
+#define AV_RATE_SETTLE_MS 50
 #define CONFIG_CAPACITY CAMERA_CONFIG_CAPACITY
 _Static_assert(UVC_PROBE_LENGTH <= 32, "probe must fit reserved MEM2 bank");
 
@@ -72,7 +73,7 @@ typedef struct {
     lwp_t thread;
     atomic_bool stop, done;
     atomic_uint last_ms, phase;
-    unsigned first_ms, first_phase, worker_ms;
+    unsigned first_ms, first_phase, worker_ms, rate_to_queue_ms;
     unsigned initial_submit_ms[ISO_QUEUE_DEPTH], initial_complete_ms[ISO_QUEUE_DEPTH];
     int initial_results[ISO_QUEUE_DEPTH];
     bool initial_completed[ISO_QUEUE_DEPTH];
@@ -1206,6 +1207,22 @@ static void *av_audio_worker(void *context)
     return NULL;
 }
 
+static bool av_audio_wait_rate(uint64_t configured)
+{
+    uint64_t last_input = configured;
+    while (ticks_to_millisecs(gettime() - configured) < AV_RATE_SETTLE_MS) {
+        uint64_t now = gettime();
+        if (exit_requested) return false;
+        if (ticks_to_millisecs(now - last_input) >= 10) {
+            uint32_t down = buttons();
+            if (exit_requested || (down & WPAD_BUTTON_B)) return false;
+            last_input = now;
+        }
+        usleep(1000);
+    }
+    return !exit_requested;
+}
+
 static bool av_audio_start(s32 handle, const UvcMode *mode)
 {
     memset(&av_audio, 0, sizeof(av_audio));
@@ -1222,13 +1239,18 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
     if (WC04_SetAlternate(test.handle, 0) >= 0
         && WC04_SetAlternate(test.handle, test.mode.alternate) >= 0)
         rate = microphone_set_rate(&test.entry, &test.mode, mic_control, &test, probe);
+    uint64_t configured = gettime();
     audio_stream_init(&av_audio.stream, rate);
-    if (rate == MIC_RATE_FAILED || exit_requested) {
+    /* Known 0c45:6366 mic-only logs imply a 38..47 ms setup interval.
+     * Preserve that setup interval explicitly instead of relying on drawing time. */
+    if (rate == MIC_RATE_FAILED || exit_requested
+        || (rate == MIC_RATE_UNREADABLE && !av_audio_wait_rate(configured))) {
         av_audio_close();
         return false;
     }
     iso_queue_init(&av_audio.queue, audio_iso_data, audio_iso_sizes, test.mode.packet_capacity);
     av_audio.start = gettime();
+    av_audio.rate_to_queue_ms = (unsigned)ticks_to_millisecs(av_audio.start - configured);
     if (LWP_CreateThread(&av_audio.thread, av_audio_worker, &av_audio, audio_stack,
                          sizeof(audio_stack), 80)
         < 0) {
@@ -1264,8 +1286,10 @@ static void av_audio_close(void)
            stream->packets, stream->empty, stream->smallest, stream->largest, stream->rejected,
            stream->peak, atomic_load(&stream->failed),
            (unsigned long long)(stream->last_ms - stream->first_ms), audio_stream_valid(stream));
-    report("A/V initial USB timing: worker_ms=%u data=%p sizes=%p; offsets from audio start.\n",
-           av_audio.worker_ms, (void *)audio_iso_data, (void *)audio_iso_sizes);
+    report("A/V initial USB timing: rate_to_queue_ms=%u worker_ms=%u data=%p sizes=%p; "
+           "request offsets from audio start.\n",
+           av_audio.rate_to_queue_ms, av_audio.worker_ms, (void *)audio_iso_data,
+           (void *)audio_iso_sizes);
     for (unsigned n = 0; n < av_audio.queue.submitted && n < ISO_QUEUE_DEPTH; ++n)
         report("A/V initial request=%u submit_ms=%u callback_ms=%u completed=%u result=%d\n", n,
                av_audio.initial_submit_ms[n], av_audio.initial_complete_ms[n],
@@ -1402,7 +1426,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.3 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.4 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");

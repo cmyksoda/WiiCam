@@ -19,10 +19,13 @@ prepare_start = main.index("static bool idle_camera(")
 prepare_end = main.index("typedef struct {", prepare_start)
 prime_start = main.index("static IsoStop av_audio_prime(")
 prime_end = main.index("static bool save_photo(", prime_start)
-code = main[globals_start:globals_end]
+wait_start = main.index("static bool av_audio_wait_rate(")
+wait_end = main.index("static bool av_audio_start(s32 handle, const UvcMode *mode)\n{", wait_start)
+settle = next(line for line in main.splitlines() if line.startswith("#define AV_RATE_SETTLE_MS "))
+code = settle + "\n" + main[globals_start:globals_end]
 code += "static bool av_audio_start(s32 handle, const UvcMode *mode);\n"
 code += "static void av_audio_close(void);\n"
-code += main[prepare_start:prepare_end] + main[prime_start:prime_end]
+code += main[prepare_start:prepare_end] + main[wait_start:wait_end] + main[prime_start:prime_end]
 with tempfile.TemporaryDirectory(prefix="wiicam-av-startup-") as directory:
     work = Path(directory)
     (work / "av_startup_under_test.h").write_text(code)
