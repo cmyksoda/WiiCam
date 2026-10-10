@@ -63,7 +63,15 @@ static AvRecorder av_recording;
 static uint8_t av_jpeg[WC04_FRAME_CAPACITY];
 static uint8_t audio_stack[32 * 1024] ATTRIBUTE_ALIGN(32);
 
-enum { AV_AUDIO_ONLY, AV_VIDEO_PREPARING, AV_VIDEO_PREPARED, AV_VIDEO_ENABLING, AV_VIDEO_ACTIVE };
+enum {
+    AV_AUDIO_ONLY,
+    AV_VIDEO_PREPARING,
+    AV_VIDEO_PREPARED,
+    AV_VIDEO_ENABLING,
+    AV_VIDEO_ACTIVE,
+    AV_VIDEO_IDLING,
+    AV_VIDEO_IDLED
+};
 
 typedef struct {
     s32 handle;
@@ -1241,8 +1249,7 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
         rate = microphone_set_rate(&test.entry, &test.mode, mic_control, &test, probe);
     uint64_t configured = gettime();
     audio_stream_init(&av_audio.stream, rate);
-    /* Known 0c45:6366 mic-only logs imply a 38..47 ms setup interval.
-     * Preserve that setup interval explicitly instead of relying on drawing time. */
+    /* Keep the 0.2.4 interval fixed while isolating video-interface setup. */
     if (rate == MIC_RATE_FAILED || exit_requested
         || (rate == MIC_RATE_UNREADABLE && !av_audio_wait_rate(configured))) {
         av_audio_close();
@@ -1297,7 +1304,8 @@ static void av_audio_close(void)
     if (av_audio.queue.consumed) {
         report(
             "A/V first audio batch: result=%d at_ms=%u phase=%u; "
-            "phase 0=audio-only 1=video-controls 2=video-prepared 3=video-enabling 4=video-active.\n",
+            "phase 0=audio-only 1=video-controls 2=video-prepared 3=video-enabling 4=video-active "
+            "5=video-idling 6=video-idled.\n",
             av_audio.first_result, av_audio.first_ms, av_audio.first_phase);
         for (unsigned n = 0; n < ISO_PACKETS; ++n)
             report("A/V first audio slot=%u returned=%u cap=%u\n", n, av_audio.first_sizes[n],
@@ -1334,7 +1342,7 @@ static IsoStop av_audio_prime(unsigned before)
         audio_stream_discard(&av_audio.stream);
         if (received - before >= AUDIO_BLOCK_BYTES) {
             report("A/V microphone ready: new_PCM_bytes=%u total_PCM_bytes=%u elapsed_ms=%llu "
-                   "phase=%u; video still idle.\n",
+                   "phase=%u; video queue not started.\n",
                    received - before, received,
                    (unsigned long long)ticks_to_millisecs(now - av_audio.start),
                    atomic_load(&av_audio.phase));
@@ -1348,11 +1356,25 @@ static IsoStop av_audio_prime(unsigned before)
 static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt)
 {
     draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height, "Checking microphone - B cancels");
-    if (!idle_camera(handle) || !av_audio_start(handle, mode)) {
+    if (!av_audio_start(handle, mode)) {
         av_recording.failed = true;
         return ISO_SUBMIT_FAILED;
     }
     IsoStop result = av_audio_prime(0);
+    if (result == ISO_RUNNING) {
+        atomic_store(&av_audio.phase, AV_VIDEO_IDLING);
+        report("A/V setting video idle after microphone reception: PCM_bytes=%u\n",
+               audio_stream_position(&av_audio.stream));
+        if (!idle_camera(handle))
+            result = ISO_SUBMIT_FAILED;
+        else if (atomic_load(&av_audio.stream.failed))
+            result = ISO_COMPLETION_FAILED;
+        else {
+            atomic_store(&av_audio.phase, AV_VIDEO_IDLED);
+            /* Isolate the IOS alternate operation from subsequent UVC controls. */
+            result = av_audio_prime(audio_stream_position(&av_audio.stream));
+        }
+    }
     if (result == ISO_RUNNING) {
         atomic_store(&av_audio.phase, AV_VIDEO_PREPARING);
         report("A/V starting UVC controls after microphone reception: PCM_bytes=%u\n",
@@ -1426,7 +1448,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.4 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.5 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");
