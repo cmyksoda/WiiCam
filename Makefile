@@ -67,11 +67,15 @@ test: build/ui_assets.h | build
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/log.c tests/test_log.c -o build/test_log
 	./build/test_log
 
-.PHONY: test-photo test-recording
+.PHONY: test-photo test-recording test-framing
 test-recording: | build
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Isource source/photo.c source/avi.c source/storage.c source/recorder.c tests/test_recorder.c $(JPEG_LIBS) -o build/test_recorder
 	./build/test_recorder
 	python3 tools/check_recordings.py
+
+test-framing: | build
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Isource source/uvc.c source/preview.c source/photo.c source/avi.c source/storage.c source/recorder.c tests/test_frame_pipeline.c $(JPEG_LIBS) -o build/test_frame_pipeline
+	./build/test_frame_pipeline
 
 test-photo: | build
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Isource source/photo.c tests/test_photo.c $(JPEG_LIBS) -o build/test_photo

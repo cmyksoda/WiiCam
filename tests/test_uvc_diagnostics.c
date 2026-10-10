@@ -56,11 +56,14 @@ static void test_limits(void)
     f = fixture(5, 3, 0x83, false);
     uvc_put32(f.data + f.frame + 17, 0);
     limited(&f, "zero frame buffer size", 0, WC04_FRAME_CAPACITY);
-    /* Hypothesis fixture only: this is not a captured 640x480 descriptor. */
+    /* Synthetic descriptor carrying the physically observed frame limit. */
     f.data[f.frame + 5] = 0x80; f.data[f.frame + 6] = 2;
     f.data[f.frame + 7] = 0xe0; f.data[f.frame + 8] = 1;
     uvc_put32(f.data + f.frame + 17, 614989);
-    limited(&f, "frame buffer exceeds capacity", 614989, 614400);
+    assert(uvc_parse(f.data, f.length, 5, 640, 480, &mode) == UVC_OK);
+    assert(mode.max_frame == 614989);
+    uvc_put32(f.data + f.frame + 17, WC04_FRAME_CAPACITY + 1);
+    limited(&f, "frame buffer exceeds capacity", WC04_FRAME_CAPACITY + 1, WC04_FRAME_CAPACITY);
     uvc_put32(f.data + f.frame + 17, WC04_FRAME_CAPACITY);
     assert(uvc_parse(f.data, f.length, 5, 640, 480, &mode) == UVC_OK);
     uvc_put32(f.data + f.frame + 21, 123456);
@@ -80,7 +83,7 @@ static void test_boundaries(void)
 {
     struct { uint8_t before, bytes[128], after; } memory = {.before=0x5a, .after=0xa5};
     UvcFrame frame;
-    /* Padding remains rejected, even when a raw EOI pair is nearby. */
+    /* Nonzero padding remains rejected even with a nearby raw EOI pair. */
     for (unsigned padding = 0; padding <= 7; ++padding) {
         uint8_t packet[20] = {2,0x82,0xff,0xd8,0x11,0x22,0xff,0xd9};
         for (unsigned i = 0; i < padding; ++i) packet[8+i] = 0xa5;
@@ -155,6 +158,6 @@ int main(void)
 {
     test_limits();
     test_boundaries();
-    puts("PASS: exact descriptor limits, unchanged strict JPEG acceptance, padding/split/truncated markers, four-sample cap, short/overflow bounds and reset");
+    puts("PASS: exact descriptor limits, strict nonzero-tail rejection, padding/split/truncated markers, four-sample cap, short/overflow bounds and reset");
     return 0;
 }

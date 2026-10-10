@@ -321,6 +321,23 @@ static void boundary_rejected(UvcFrame *frame, uint8_t header_length, uint8_t fl
     }
 }
 
+/* Only the observed eight-byte alignment suffix is eligible for removal.
+ * Boundary acceptance still requires full decoding before display or saving. */
+static size_t jpeg_length(const UvcFrame *frame)
+{
+    size_t length = frame->size;
+    if (frame->discard || length < 4 || frame->data[0] != 0xff || frame->data[1] != 0xd8)
+        return 0;
+    if (!(length & 7)) {
+        unsigned padding = 0;
+        while (padding < 7 && length > 4 && frame->data[length - 1] == 0) {
+            --length;
+            ++padding;
+        }
+    }
+    return frame->data[length - 2] == 0xff && frame->data[length - 1] == 0xd9 ? length : 0;
+}
+
 bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length)
 {
     ++frame->stats.packets;
@@ -375,9 +392,8 @@ bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length)
     if (!(flags & 2))
         return false;
     frame->ended = true;
-    if (frame->discard || frame->size < 4 || frame->data[0] != 0xff ||
-        frame->data[1] != 0xd8 || frame->data[frame->size - 2] != 0xff ||
-        frame->data[frame->size - 1] != 0xd9) {
+    size_t normalized = jpeg_length(frame);
+    if (!normalized) {
         ++frame->dropped;
         if (!frame->discard) {
             if (!frame->size)
@@ -391,5 +407,10 @@ bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length)
     }
     ++frame->stats.complete;
     ++frame->stats.accepted_mod8[frame->size & 7];
+    if (normalized != frame->size) {
+        ++frame->stats.normalized_frames;
+        frame->stats.padding_bytes += (unsigned)(frame->size - normalized);
+        frame->size = normalized;
+    }
     return true;
 }

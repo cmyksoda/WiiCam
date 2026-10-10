@@ -1,26 +1,31 @@
-WC04 Camera 0.3.3 USB DIAGNOSTIC - PRIVATE LOCAL TEST ONLY
+WC04 Camera 0.3.4 USB EXPERIMENTAL - PRIVATE LOCAL TEST ONLY
 
 Copy apps/wc04-camera-experimental to the SD card's apps directory.
 Replace the existing experimental folder's contents with this version; keep the
-baseline apps/wc04-camera folder and earlier ZIPs. Confirm 0.3.3 in HBC; keep the working 0.3.2 ZIP.
-This diagnostic build records four rejected JPEG boundaries at most per capture
-(8-byte prefix, 16-byte suffix), reason counts and size-modulo-eight histograms.
-It logs exact descriptor-limit values before streaming. Boundary samples and
-capture summaries are written only after stopping; no per-frame disk logging.
-JPEG validation, buffer limits and negotiation are unchanged. Padding and the
-640x480 frame-bound hypothesis are not established. Existing media stays intact.
+baseline apps/wc04-camera folder and earlier ZIPs. Confirm 0.3.4 in HBC; keep the working 0.3.2 ZIP.
+This build handles the observed 1-7 trailing zero bytes only after FF D9 on
+an eight-byte-aligned assembled JPEG with FF D8 and valid UVC framing. The
+normalized length reaches the unchanged full JPEG decoder and AVI writer.
+Malformed/error/truncated/oversized frames still fail; no arbitrary tail trim.
+Shared frame capacity is 615424 bytes (614400 + 1024), covering the observed
+614989-byte descriptor. This clears that descriptor gate but does not prove
+640x480 negotiation/streaming, higher frame rate, or phone playback support.
+After stopping, logs include normalized frame/byte counts, existing rejection
+counters and up to four rejected boundary samples. No per-frame disk logging.
 
-Short test: open 320x240 Photo view, wait about 10 seconds, then A to save one
-photo (or B to stop if capture is unavailable). From the menu press 1 once for
-640x480 and 2 for one camera check; no high-resolution streaming is needed for
-the descriptor evidence. Exit with HOME and share the appended session.log,
-including the 0.3.3 banner and both attempts. Recording need not be repeated.
+Short later test: with the same camera/setup, run 320x240 Photo view for about
+10 seconds and save one photo. Reopen in Video mode and record about 10 seconds,
+stopping with A or B. Then select 640x480, run camera check (2), and try a short
+preview/photo and video only if a live picture appears. Stop on failure; exit
+with HOME. Return the appended sd:/wc04-camera/session.log with the 0.3.4 banner,
+plus new photo/AVI files if saved. Note lag/cutouts and which size worked.
+Keep existing media and both 0.3.2/0.3.3 ZIPs for comparison.
 
 Requires Wii Remote, HBC under IOS58, writable FAT SD for saving.
 
 Experimental subset: single-configuration UVC 1.0 cameras offering progressive
 MJPEG at 320x240 or 640x480, isochronous IN with bInterval=1, advertised
-frame buffer at most 614400 bytes and a supported descriptor default interval.
+frame buffer at most 615424 bytes and a supported descriptor default interval.
 WC04 is preferred when connected. Otherwise the first supported interface wins.
 Use one camera; change the menu size explicitly if that size is unsupported.
 No actual speed is inferred from the USB version. Full-speed operation, hubs,
@@ -55,12 +60,13 @@ No decoded frame for 1 second shows full SMPTE bars; 10 seconds stops the stream
 Timer or pending shutter is canceled by lost signal. If USB drain waits, unplug the camera.
 A wedged IOS or SD operation can still block; do not remove SD while saving.
 
-This 0.3.3 diagnostic build is host-tested and compiled, NOT physically verified.
+This 0.3.4 experimental build is host-tested and compiled, NOT physically verified.
 Jaxi's 0.3.2 log/media confirmed two 320x240 photos and an 11.112-second, 44-frame
 silent AVI on 0c45:6366 under IOS58. She reported Photo Channel playback, lag,
 cutouts, higher-size failure and phone playback failure. Camera model and console
-variant remain unknown. Those results do not certify this diagnostic build.
-The 0.3.2 log shows dominant pre-decode JPEG-boundary rejects, not worker skips.
+variant remain unknown. Those results do not certify this experimental build.
+The 0.3.3 log confirmed zero padding in four rejected samples and a 614989-byte
+descriptor request. These fixes still require later physical validation.
 
 Temporary webcam art: Giuseppe Ramos (stockgiu) / Vecteezy.com.
 https://www.vecteezy.com/vector-art/5252064-webcam-device-technology

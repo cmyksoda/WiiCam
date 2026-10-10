@@ -9,7 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define WC04_FRAME_CAPACITY (640u * 480u * 2u)
+#include "frame_limits.h"
 #define WC04_MAX_ALTS 16
 #define UVC_PROBE_LENGTH 26
 #define UVC_MAX_INTERVALS 32
@@ -65,6 +65,8 @@ typedef struct {
     unsigned missing_eof, empty_frames, invalid_jpeg, complete;
     /* Nonempty, non-discarded EOF frames only; reason counters can overlap. */
     unsigned short_jpeg, missing_soi, missing_eoi;
+    unsigned normalized_frames, padding_bytes;
+    /* Assembled sizes before any padding normalization. */
     unsigned accepted_mod8[8], rejected_mod8[8];
 } UvcStats;
 

@@ -2,6 +2,7 @@
  * Copyright (c) 2026 cmyksoda
  */
 #include "avi.h"
+#include "frame_limits.h"
 #include <string.h>
 
 static void le32(uint8_t *p, uint32_t n)
@@ -79,7 +80,7 @@ bool avi_begin(Avi *a, FILE *file, unsigned width, unsigned height)
 bool avi_has_space(const Avi *a, size_t length)
 {
     return !a->failed && !a->finished && a->file && a->frames < AVI_MAX_FRAMES &&
-        length <= 640u*480u*2u &&
+        length <= WC04_FRAME_CAPACITY &&
         (uint64_t)224+a->bytes+8+length+(length&1)+8+(a->frames+1)*16 <= AVI_MAX_BYTES;
 }
 

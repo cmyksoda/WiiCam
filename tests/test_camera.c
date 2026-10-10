@@ -188,11 +188,17 @@ int main(void)
     f = make_fake();
     uint8_t *descriptor = f.configs[0].data + f.configs[0].frame;
     descriptor[5] = 0x80; descriptor[6] = 2; descriptor[7] = 0xe0; descriptor[8] = 1;
-    uvc_put32(descriptor + 17, 614989); /* synthetic hypothesis, not hardware data */
+    uvc_put32(descriptor + 17, 614989); /* observed limit in a synthetic layout */
+    assert(find_size(&f, 1, 640, 480, &handle, &mode));
+    assert(mode.max_frame == 614989 && mode.interface == 5 && mode.endpoint == 0x83);
+    f = make_fake();
+    descriptor = f.configs[0].data + f.configs[0].frame;
+    descriptor[5] = 0x80; descriptor[6] = 2; descriptor[7] = 0xe0; descriptor[8] = 1;
+    uvc_put32(descriptor + 17, WC04_FRAME_CAPACITY + 1);
     assert(!find_size(&f, 1, 640, 480, &handle, &mode));
     assert(f.closes[0] == 1 && f.reads[0] == 3 && f.messages == 5);
-    assert(strstr(f.messages_text, "requested=640x480 reason=frame buffer exceeds capacity value=614989 bound=614400"));
-    assert(strstr(f.messages_text, "max_frame=614989 cap=614400 default_interval=333333 interval_count=2"));
+    assert(strstr(f.messages_text, "requested=640x480 reason=frame buffer exceeds capacity value=615425 bound=615424"));
+    assert(strstr(f.messages_text, "max_frame=615425 cap=615424 default_interval=333333 interval_count=2"));
     assert(strstr(f.messages_text, "Discrete intervals from index 0: 333333 666666"));
     f = make_fake();
     f.configs[0] = fixture(5, 3, 0x83, true);

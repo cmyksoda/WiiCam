@@ -92,6 +92,21 @@ static void test_mode(unsigned width, unsigned height)
         {UVC_SET_CUR, UVC_VS_COMMIT, 26, negotiated}
     };
     run(&mode, normal, 4, true);
+    /* Headroom is accepted without loosening the descriptor's negotiated bound. */
+    UvcMode roomy = mode;
+    roomy.max_frame = 614989;
+    uvc_put32(negotiated + 18, 614989);
+    run(&roomy, normal, 4, true);
+    uvc_put32(negotiated + 18, 614990);
+    run(&roomy, normal, 3, false);
+    roomy.max_frame = WC04_FRAME_CAPACITY;
+    uvc_put32(negotiated + 18, WC04_FRAME_CAPACITY);
+    run(&roomy, normal, 4, true);
+    uvc_put32(negotiated + 18, WC04_FRAME_CAPACITY + 1);
+    run(&roomy, normal, 3, false);
+    roomy.max_frame = WC04_FRAME_CAPACITY + 1;
+    run(&roomy, normal, 3, false);
+    uvc_put32(negotiated + 18, width * height);
     /* Newer control versions must fail before touching the 26-byte bank. */
     for (unsigned version = 0x110; version <= 0x150; version += 0x40) {
         UvcMode newer = mode;

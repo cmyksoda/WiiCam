@@ -643,7 +643,9 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
     report("Invalid JPEG %u, overflow %u\n", stats->invalid_jpeg, stats->overflow);
     report("JPEG boundary reasons (overlap): short=%u missing_soi=%u missing_terminal_eoi=%u\n",
            stats->short_jpeg, stats->missing_soi, stats->missing_eoi);
-    report("JPEG accepted size mod8 [0..7]: %u %u %u %u %u %u %u %u\n",
+    report("JPEG normalized zero padding: frames=%u bytes=%u (aligned, max 7 bytes)\n",
+           stats->normalized_frames, stats->padding_bytes);
+    report("JPEG accepted assembled size mod8 [0..7]: %u %u %u %u %u %u %u %u\n",
            stats->accepted_mod8[0], stats->accepted_mod8[1], stats->accepted_mod8[2], stats->accepted_mod8[3],
            stats->accepted_mod8[4], stats->accepted_mod8[5], stats->accepted_mod8[6], stats->accepted_mod8[7]);
     report("JPEG rejected size mod8 [0..7]: %u %u %u %u %u %u %u %u\n",
@@ -746,7 +748,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWC04 Camera 0.3.3 UVC DIAGNOSTIC local test - IOS %u\n", IOS_GetVersion());
+    report("\nWC04 Camera 0.3.4 UVC EXPERIMENTAL local test - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report("0.3.2 photo/video capture verified on 0c45:6366 at 320x240; this diagnostic build awaits hardware testing.\n");
     bool usb_ready = false;
