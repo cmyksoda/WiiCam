@@ -63,15 +63,7 @@ static AvRecorder av_recording;
 static uint8_t av_jpeg[WC04_FRAME_CAPACITY];
 static uint8_t audio_stack[32 * 1024] ATTRIBUTE_ALIGN(32);
 
-enum {
-    AV_AUDIO_ONLY,
-    AV_VIDEO_PREPARING,
-    AV_VIDEO_PREPARED,
-    AV_VIDEO_ENABLING,
-    AV_VIDEO_ACTIVE,
-    AV_VIDEO_IDLING,
-    AV_VIDEO_IDLED
-};
+enum { AV_AUDIO_ONLY, AV_VIDEO_PREPARING, AV_VIDEO_PREPARED, AV_VIDEO_ENABLING, AV_VIDEO_ACTIVE };
 
 typedef struct {
     s32 handle;
@@ -1304,8 +1296,7 @@ static void av_audio_close(void)
     if (av_audio.queue.consumed) {
         report(
             "A/V first audio batch: result=%d at_ms=%u phase=%u; "
-            "phase 0=audio-only 1=video-controls 2=video-prepared 3=video-enabling 4=video-active "
-            "5=video-idling 6=video-idled.\n",
+            "phase 0=audio-only 1=video-controls 2=video-prepared 3=video-enabling 4=video-active.\n",
             av_audio.first_result, av_audio.first_ms, av_audio.first_phase);
         for (unsigned n = 0; n < ISO_PACKETS; ++n)
             report("A/V first audio slot=%u returned=%u cap=%u\n", n, av_audio.first_sizes[n],
@@ -1360,44 +1351,43 @@ static int av_video_alternate(s32 handle, const UvcMode *mode)
     int payload = uvc_control_payload_length(result, 1);
     report("A/V GET_INTERFACE: interface=%u raw=%ld payload=%d alternate=%d\n", mode->interface,
            (long)result, payload, payload == 1 ? probe[0] : -1);
-    return payload == 1 ? probe[0] : -1;
+    if (payload != 1 || mode->alt_count > WC04_MAX_ALTS) return -1;
+    if (!probe[0]) return 0;
+    for (size_t n = 0; n < mode->alt_count; ++n)
+        if (mode->alts[n].number == probe[0]) return probe[0];
+    report("A/V GET_INTERFACE returned unadvertised alternate=%u; video not reset.\n", probe[0]);
+    return -1;
 }
 
-static bool av_video_idle(s32 handle, const UvcMode *mode)
+static bool av_video_idle(s32 handle, const UvcMode *mode, bool *video_changed)
 {
     int alternate = av_video_alternate(handle, mode);
     if (alternate < 0) return false;
     if (!alternate) {
-        /* Avoid resetting an already idle video interface while audio is live. */
+        /* GET_INTERFACE must agree with the descriptor before changing video state. */
         report("A/V video already idle; redundant alternate change skipped.\n");
         return true;
     }
     report("A/V video alternate=%d; stopping it before negotiation.\n", alternate);
+    *video_changed = true;
     return idle_camera(handle) && av_video_alternate(handle, mode) == 0;
 }
 
-static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt)
+static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt, bool *video_changed)
 {
+    *video_changed = false;
     draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height, "Checking microphone - B cancels");
+    report("A/V checking video idle before starting audio.\n");
+    if (!av_video_idle(handle, mode, video_changed)) {
+        report("A/V video idle preflight failed; audio not started.\n");
+        av_recording.failed = true;
+        return ISO_SUBMIT_FAILED;
+    }
     if (!av_audio_start(handle, mode)) {
         av_recording.failed = true;
         return ISO_SUBMIT_FAILED;
     }
     IsoStop result = av_audio_prime(0);
-    if (result == ISO_RUNNING) {
-        atomic_store(&av_audio.phase, AV_VIDEO_IDLING);
-        report("A/V checking video idle after microphone reception: PCM_bytes=%u\n",
-               audio_stream_position(&av_audio.stream));
-        if (!av_video_idle(handle, mode))
-            result = ISO_SUBMIT_FAILED;
-        else if (atomic_load(&av_audio.stream.failed))
-            result = ISO_COMPLETION_FAILED;
-        else {
-            atomic_store(&av_audio.phase, AV_VIDEO_IDLED);
-            /* Isolate the IOS alternate operation from subsequent UVC controls. */
-            result = av_audio_prime(audio_stream_position(&av_audio.stream));
-        }
-    }
     if (result == ISO_RUNNING) {
         atomic_store(&av_audio.phase, AV_VIDEO_PREPARING);
         report("A/V starting UVC controls after microphone reception: PCM_bytes=%u\n",
@@ -1416,6 +1406,7 @@ static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt)
         unsigned before = audio_stream_position(&av_audio.stream);
         atomic_store(&av_audio.phase, AV_VIDEO_ENABLING);
         report("A/V enabling video after microphone reception: PCM_bytes=%u\n", before);
+        *video_changed = true;
         if (!activate_camera(handle, alt))
             result = ISO_SUBMIT_FAILED;
         else if (atomic_load(&av_audio.stream.failed))
@@ -1433,6 +1424,16 @@ static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt)
            atomic_load(&av_audio.phase));
     av_audio_close();
     return result;
+}
+
+static void stop_video_stream(s32 handle, bool video_changed)
+{
+    if (!video_changed) {
+        report("Stop streaming skipped: video alternate was not changed by this attempt.\n");
+        return;
+    }
+    s32 stopped = WC04_SetAlternate(handle, 0);
+    report("Stop streaming: %ld\n", (long)stopped);
 }
 
 static bool save_photo(unsigned width, unsigned height, char path[80])
@@ -1471,7 +1472,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.6 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.7 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");
@@ -1556,12 +1557,12 @@ int main(void)
             if (find_camera(&handle, width, height, &mode)) {
                 UvcAlternate alt;
                 IsoStop result = ISO_SUBMIT_FAILED;
+                bool video_changed = true;
                 if (screen_info.audio)
-                    result = receive_av(handle, &mode, &alt);
+                    result = receive_av(handle, &mode, &alt, &video_changed);
                 else if (negotiate(handle, &mode, &alt))
                     result = receive_photo(handle, &mode, &alt);
-                s32 stopped = WC04_SetAlternate(handle, 0);
-                report("Stop streaming: %ld\n", (long)stopped);
+                stop_video_stream(handle, video_changed);
                 snprintf(status, sizeof(status), "%s",
                          result == ISO_CANCELLED ? "Open viewfinder to start the camera."
                          : result == ISO_TIMEOUT ? "No frames - A retries, B menu"
