@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Create an Android-oriented MP4 copy of a WiiCam AVI using desktop FFmpeg."""
 import argparse
 import json

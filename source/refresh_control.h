@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef WC04_REFRESH_CONTROL_H
 #define WC04_REFRESH_CONTROL_H
 #include <stdbool.h>

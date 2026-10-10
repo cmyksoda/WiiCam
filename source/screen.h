@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef WC04_SCREEN_H
 #define WC04_SCREEN_H
 #include <stdbool.h>

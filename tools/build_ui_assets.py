@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Deterministically rasterize replaceable artwork and a caller-selected local font.
 
 Generated font bitmaps inherit the selected font's licensing restrictions.

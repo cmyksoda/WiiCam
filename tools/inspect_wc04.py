@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 cmyksoda
 """Read Linux USB descriptors for 057e:030a without opening a video stream."""
 

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef WC04_RECORDER_H
 #define WC04_RECORDER_H
 #include "avi.h"

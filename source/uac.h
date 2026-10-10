@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef WIICAM_UAC_H
 #define WIICAM_UAC_H
 #include <stdbool.h>

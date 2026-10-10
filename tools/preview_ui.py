@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 from pathlib import Path
 from PIL import Image, ImageDraw
 names = ['menu', 'no-signal', 'timer', 'video', 'no-sd', 'review', 'write-error', 'no-signal-wide']

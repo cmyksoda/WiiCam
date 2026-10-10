@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #define _GNU_SOURCE
 #include "avi.h"
 #include <assert.h>

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef WC04_STORAGE_H
 #define WC04_STORAGE_H
 #include <stdbool.h>
