@@ -3,6 +3,7 @@
  */
 #include "camera_inventory.h"
 #include "camera.h"
+#include "uac.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -162,6 +163,20 @@ bool camera_inventory(const uint8_t *data, size_t length, CameraInventoryReport 
                 emit(&log,
                      "interface=%u alt=%u endpoints=%u class=%02x subclass=%02x protocol=%02x",
                      interface, alt, d[4], class, subclass, protocol);
+                if (class == 1 && subclass == 2 && protocol == 0 && alt) {
+                    UacMode audio;
+                    UacResult parsed = uac_parse(data, length, interface, alt, &audio);
+                    if (parsed == UAC_OK)
+                        emit(
+                            &log,
+                            "PCM16 candidate if=%u alt=%u ep=%02x mic=%u channels=%u rate=%lu packet=%u interval=%u frequency_control=%u",
+                            audio.interface, audio.alternate, audio.endpoint, audio.microphone,
+                            audio.channels, (unsigned long)audio.rate, audio.packet_capacity,
+                            audio.interval, audio.frequency_control);
+                    else
+                        emit(&log, "PCM16 candidate if=%u alt=%u validation=%u", interface, alt,
+                             parsed);
+                }
             } else if (have_interface && d[1] == 5) {
                 if (size < 7) {
                     inventory->malformed = true;

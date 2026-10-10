@@ -57,6 +57,7 @@ int main(void)
     assert(strstr(r.text, "channels=1 sample_bytes=2 bits=16 rates=2"));
     assert(strstr(r.text, "rate_hz index=0 value=16000"));
     assert(strstr(r.text, "rate_hz index=1 value=48000"));
+    assert(strstr(r.text, "PCM16 candidate if=7 alt=1 ep=84 mic=1 channels=1 rate=16000"));
     assert(strstr(r.text, "frequency_control=1"));
     /* Continuous rates and fixed-rate endpoints are inventory facts, not rejection. */
     size_t format = start + 9 + 9 + 12 + 9 + 9 + 9 + 7;

@@ -810,7 +810,7 @@ int main(void)
         log_file = fopen("sd:/wc04-camera/session.log", "a");
     report("\nWiiCam 0.1.0 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
-    report("Camera descriptor inventory enabled. Video recording is silent.\n");
+    report("Camera capability inventory enabled. Video recording is silent.\n");
     bool usb_ready = false;
     if (IOS_GetVersion() == 58)
         usb_ready = buffers_ready && USB_Initialize() >= 0;
