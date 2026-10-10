@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "frame_limits.h"
+#include "video_modes.h"
 #define WC04_MAX_ALTS 16
 #define UVC_PROBE_LENGTH 26
 #define UVC_MAX_INTERVALS 32
@@ -38,7 +39,7 @@ typedef struct {
 typedef struct {
     uint8_t configuration, interface, control_interface, format, frame, endpoint;
     uint16_t width, height, version;
-    uint32_t interval, max_frame;
+    uint32_t interval, max_frame, supported_sizes;
     unsigned interval_count;
     uint32_t intervals[UVC_MAX_INTERVALS], interval_min, interval_max, interval_step;
     UvcAlternate alts[WC04_MAX_ALTS];
@@ -97,6 +98,7 @@ typedef enum {
 
 UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned interface, unsigned width,
                          unsigned height, UvcMode *mode);
+uint32_t uvc_supported_sizes(const uint8_t *data, size_t length, unsigned interface);
 const char *uvc_parse_description(UvcParseResult result);
 int uvc_control_payload_length(int result, unsigned requested);
 bool uvc_interval_supported(const UvcMode *mode, uint32_t interval);

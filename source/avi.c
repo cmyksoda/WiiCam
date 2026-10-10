@@ -68,7 +68,7 @@ static void header(uint8_t data[224], const Avi *a, unsigned duration, bool fini
 bool avi_begin(Avi *a, FILE *file, unsigned width, unsigned height)
 {
     *a = (Avi){.file = file, .width = width, .height = height};
-    if (!file || !width || width > 640 || !height || height > 480) {
+    if (!file || !width || width > WC04_MAX_WIDTH || !height || height > WC04_MAX_HEIGHT) {
         a->failed = true;
         return false;
     }

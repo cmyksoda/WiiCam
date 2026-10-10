@@ -29,6 +29,7 @@
 #include "storage.h"
 #include "camera.h"
 #include "refresh_control.h"
+#include "microphone.h"
 
 #define FRAME_TIMEOUT_SECONDS 10
 #define CONFIG_CAPACITY CAMERA_CONFIG_CAPACITY
@@ -39,8 +40,9 @@ static uint8_t *probe;
 static uint8_t *iso_data;
 static uint16_t *iso_sizes;
 static uint8_t frame_data[WC04_FRAME_CAPACITY];
-static uint8_t rgb[640 * 480 * 3];
-static uint8_t decode_rgb[640 * 480 * 3];
+static uint8_t rgb[WC04_RGB_CAPACITY];
+static uint8_t decode_rgb[WC04_RGB_CAPACITY];
+static uint32_t available_sizes = VIDEO_DEFAULT_SIZES;
 static volatile bool exit_requested;
 static bool mounted;
 static FILE *log_file;
@@ -231,9 +233,11 @@ static bool find_camera(s32 *handle, unsigned width, unsigned height, UvcMode *m
     int32_t selected;
     if (!camera_find(entries, count, width, height, config, CONFIG_CAPACITY, &ops, &selected,
                      mode)) {
-        report("No supported camera mode. UVC 1.0 MJPEG, 320x240/640x480, interval-1 ISO only.\n");
+        report(
+            "No supported camera mode. Bounded UVC 1.0 MJPEG sizes through 848x480, interval-1 ISO only.\n");
         return false;
     }
+    available_sizes = mode->supported_sizes;
     *handle = selected;
     report("Selected VC %u / VS %u / endpoint %02x / MJPEG format %u frame %u, %ux%u\n",
            mode->control_interface, mode->interface, mode->endpoint, mode->format, mode->frame,
@@ -772,6 +776,211 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
     return stop;
 }
 
+typedef struct {
+    s32 handle;
+    UacMode mode;
+    MicPcm pcm;
+    uint64_t start, last_input, first_packet, last_packet;
+    unsigned width, height;
+} MicTest;
+
+static int mic_control(void *context, uint8_t type, uint8_t request, uint16_t value, uint16_t index,
+                       uint8_t *data, unsigned length)
+{
+    const MicTest *test = context;
+    s32 result = type & 0x80
+                     ? USB_ReadCtrlMsg(test->handle, type, request, value, index, length, data)
+                     : USB_WriteCtrlMsg(test->handle, type, request, value, index, length, data);
+    int payload = uvc_control_payload_length(result, length);
+    report("Microphone control type=%02x request=%02x endpoint=%02x raw=%ld payload=%d\n", type,
+           request, index, (long)result, payload);
+    return payload;
+}
+
+static int mic_submit(void *context, IsoSlot *slot)
+{
+    const MicTest *test = context;
+    return USB_ReadIsoMsgAsync(test->handle, test->mode.endpoint, ISO_PACKETS, slot->sizes,
+                               slot->data, iso_finished, slot);
+}
+
+static bool mic_consume(void *context, const IsoSlot *slot)
+{
+    MicTest *test = context;
+    for (unsigned n = 0; n < ISO_PACKETS; ++n) {
+        if (!microphone_pcm_packet(&test->pcm, slot->data + n * test->mode.packet_capacity,
+                                   slot->sizes[n], test->mode.packet_capacity))
+            return true;
+        if (slot->sizes[n]) {
+            test->last_packet = gettime();
+            if (!test->first_packet) test->first_packet = test->last_packet;
+        }
+        if (test->pcm.size == MIC_BYTES) return true;
+    }
+    return false;
+}
+
+static IsoStop mic_poll(void *context)
+{
+    MicTest *test = context;
+    uint64_t now = gettime();
+    uint32_t down = 0;
+    if (ticks_to_millisecs(now - test->last_input) >= 10) {
+        down = buttons();
+        test->last_input = now;
+    }
+    if (exit_requested) return ISO_EXIT;
+    if (down & WPAD_BUTTON_B) return ISO_CANCELLED;
+    if (ticks_to_millisecs(now - test->start) >= 10000) return ISO_TIMEOUT;
+    return ISO_RUNNING;
+}
+
+static void mic_stopping(void *context, IsoStop reason, int failure)
+{
+    const MicTest *test = context;
+    draw_screen(SCREEN_WAITING, NULL, test->width, test->height, "Stopping microphone");
+    report("Microphone stop reason=%u failure=%d; draining before saving.\n", reason, failure);
+}
+
+static void mic_cancel(void *context)
+{
+    const MicTest *test = context;
+    draw_screen(SCREEN_WAITING, NULL, test->width, test->height, "If stuck here, unplug camera");
+    s32 result = WC04_CancelIso(test->handle, test->mode.endpoint);
+    report("Microphone cancel endpoint=%02x result=%ld; waiting for all completions.\n",
+           test->mode.endpoint, (long)result);
+}
+
+static bool mic_open(s32 video_handle, const UvcMode *video_mode, MicTest *test)
+{
+    uint8_t reference[CONFIG_CAPACITY];
+    unsigned length = uvc_le16(config + 2);
+    if (length < 9 || length > sizeof(reference) || !microphone_mode(config, length, &test->mode)) {
+        report("Microphone test requires one unambiguous UAC1 mono PCM16 16000 Hz mode.\n");
+        return false;
+    }
+    memcpy(reference, config, length);
+    usb_device_entry devices[CAMERA_MAX_DEVICES];
+    MicEntry entries[CAMERA_MAX_DEVICES];
+    u8 count = 0;
+    if (USB_GetDeviceList(devices, CAMERA_MAX_DEVICES, 0, &count) < 0 || count > CAMERA_MAX_DEVICES)
+        return false;
+    for (unsigned n = 0; n < count; ++n) {
+        entries[n] = (MicEntry){{devices[n].device_id, devices[n].vid, devices[n].pid,
+                                 (uint8_t)(devices[n].token >> 8)},
+                                devices[n].token};
+        report("Microphone pairing: id=%08lx token=%08lx vid=%04x pid=%04x interface=%u\n",
+               (unsigned long)(uint32_t)devices[n].device_id, (unsigned long)devices[n].token,
+               devices[n].vid, devices[n].pid, entries[n].camera.interface);
+    }
+    size_t selected;
+    if (!microphone_match(entries, count, video_handle, video_mode->interface, test->mode.interface,
+                          &selected)) {
+        report("Microphone pairing absent or ambiguous; no audio interface opened.\n");
+        return false;
+    }
+    int32_t opened;
+    const CameraEntry *entry = &entries[selected].camera;
+    if (camera_open(NULL, entry, &opened) < 0) return false;
+    bool valid = camera_parameters(NULL, opened, config) == 0
+                 && microphone_parameters(entry, config, reference[5]);
+    if (valid) {
+        memset(config, 0, CONFIG_CAPACITY);
+        valid = uvc_control_payload_length(camera_read(NULL, opened, 8, 0, 1, config), 1) == 1
+                && config[0] == reference[5];
+    }
+    if (valid) {
+        memset(config, 0, CONFIG_CAPACITY);
+        valid =
+            uvc_control_payload_length(camera_read(NULL, opened, 6, 0x0200, length, config), length)
+                == (int)length
+            && !memcmp(config, reference, length);
+    }
+    if (!valid) {
+        report("Microphone IOS identity/interface or complete configuration mismatch.\n");
+        camera_close(NULL, opened);
+        return false;
+    }
+    test->handle = opened;
+    return true;
+}
+
+static void microphone_test(unsigned width, unsigned height, char *status, size_t capacity)
+{
+    snprintf(status, capacity, "Microphone unavailable - see log");
+    if (!mounted) {
+        snprintf(status, capacity, "Microphone test needs an SD card");
+        return;
+    }
+    draw_screen(SCREEN_WAITING, NULL, width, height, "Connecting microphone");
+    s32 video_handle;
+    UvcMode video_mode;
+    if (!find_camera(&video_handle, width, height, &video_mode)) return;
+    MicTest test = {.width = width, .height = height};
+    bool opened = mic_open(video_handle, &video_mode, &test);
+    USB_CloseDevice(&video_handle);
+    if (!opened) return;
+    uint8_t *samples = malloc(MIC_BYTES);
+    microphone_pcm_init(&test.pcm, samples, MIC_BYTES);
+    bool configured = samples && WC04_SetAlternate(test.handle, 0) >= 0
+                      && WC04_SetAlternate(test.handle, test.mode.alternate) >= 0
+                      && microphone_set_rate(&test.mode, mic_control, &test, probe);
+    if (configured && !exit_requested) {
+        report("Microphone test: interface=%u alt=%u endpoint=%02x PCM16 mono rate=%u "
+               "packet=%u interval=%u; bus speed unknown; video idle.\n",
+               test.mode.interface, test.mode.alternate, test.mode.endpoint, MIC_RATE,
+               test.mode.packet_capacity, test.mode.interval);
+        draw_screen(SCREEN_WAITING, NULL, width, height,
+                    "Recording microphone for 5 seconds - B cancels");
+        IsoQueue queue;
+        iso_queue_init(&queue, iso_data, iso_sizes, test.mode.packet_capacity);
+        const IsoHooks hooks = {.submit = mic_submit,
+                                .consume = mic_consume,
+                                .poll = mic_poll,
+                                .idle = idle_capture,
+                                .stopping = mic_stopping,
+                                .cancel = mic_cancel};
+        test.start = gettime();
+        IsoStop stop = iso_queue_run(&queue, &hooks, &test);
+        unsigned elapsed = (unsigned)ticks_to_millisecs(gettime() - test.start);
+        report("Microphone result: bytes=%u samples=%u packets=%u empty=%u lengths=%u..%u "
+               "peak=%u malformed=%u elapsed_ms=%u first_packet_ms=%llu last_packet_ms=%llu\n",
+               (unsigned)test.pcm.size, (unsigned)test.pcm.size / 2, test.pcm.packets,
+               test.pcm.empty, test.pcm.packets ? test.pcm.smallest : 0, test.pcm.largest,
+               test.pcm.peak, test.pcm.failed, elapsed,
+               (unsigned long long)(test.first_packet
+                                        ? ticks_to_millisecs(test.first_packet - test.start)
+                                        : 0),
+               (unsigned long long)(test.last_packet
+                                        ? ticks_to_millisecs(test.last_packet - test.start)
+                                        : 0));
+        report("Microphone queue: submitted=%u consumed=%u drained=%u failure=%d\n",
+               queue.submitted, queue.consumed, queue.drained, queue.failure);
+        bool success = stop == ISO_PHOTO_READY && !exit_requested && !test.pcm.failed
+                       && test.pcm.size == MIC_BYTES;
+        if (success && ensure_directory("sd:/wc04-camera/audio")) {
+            char path[128];
+            FILE *file = storage_create("sd:/wc04-camera/audio", "MIC", "WAV", path, sizeof(path));
+            success = file && storage_finish(file, path, microphone_wav(file, &test.pcm));
+            if (success) {
+                report("Microphone WAV saved: %s; 5 seconds by sample count; listen to verify.\n",
+                       path);
+                snprintf(status, capacity, "%s saved - see log", strrchr(path, '/') + 1);
+            }
+        } else
+            success = false;
+        if (!success)
+            snprintf(status, capacity, "%s",
+                     stop == ISO_CANCELLED || stop == ISO_EXIT ? "Microphone test cancelled"
+                                                               : "Microphone not saved - see log");
+    } else
+        report("Microphone setup failed or cancelled; no recording started.\n");
+    s32 stopped = WC04_SetAlternate(test.handle, 0);
+    report("Microphone idle alternate: %ld\n", (long)stopped);
+    USB_CloseDevice(&test.handle);
+    free(samples);
+}
+
 static bool save_photo(unsigned width, unsigned height, char path[80])
 {
     if (!mounted || !ensure_directory("sd:/DCIM") || !ensure_directory("sd:/DCIM/100WC04")) {
@@ -810,7 +1019,8 @@ int main(void)
         log_file = fopen("sd:/wc04-camera/session.log", "a");
     report("\nWiiCam 0.1.0 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
-    report("Camera capability inventory enabled. Video recording is silent.\n");
+    report(
+        "Bounded sizes and explicit 5-second microphone test enabled. Video recording is silent.\n");
     bool usb_ready = false;
     if (IOS_GetVersion() == 58)
         usb_ready = buffers_ready && USB_Initialize() >= 0;
@@ -838,17 +1048,28 @@ int main(void)
             down = 0;
         }
         if (idle_page == SCREEN_MENU && (down & WPAD_BUTTON_PLUS)) {
-            screen_info.video = !screen_info.video;
+            if (screen_info.microphone)
+                screen_info.microphone = false;
+            else if (screen_info.video) {
+                screen_info.video = false;
+                screen_info.microphone = true;
+            } else
+                screen_info.video = true;
+            snprintf(status, sizeof(status), "%s",
+                     screen_info.microphone ? "A records a 5-second microphone test"
+                                            : "Open viewfinder to start the camera.");
             menu = true;
         }
-        if (idle_page == SCREEN_MENU && (down & (WPAD_BUTTON_LEFT | WPAD_BUTTON_RIGHT))) {
+        if (idle_page == SCREEN_MENU && !screen_info.microphone
+            && (down & (WPAD_BUTTON_LEFT | WPAD_BUTTON_RIGHT))) {
             screen_info.timer =
                 capture_timer_next(screen_info.timer, down & WPAD_BUTTON_LEFT ? -1 : 1);
             menu = true;
         }
-        if (idle_page == SCREEN_MENU && (down & WPAD_BUTTON_1)) {
-            width = width == 320 ? 640 : 320;
-            height = width == 320 ? 240 : 480;
+        if (idle_page == SCREEN_MENU && !screen_info.microphone && (down & WPAD_BUTTON_1)) {
+            VideoSize next = video_size_next(width, height, available_sizes);
+            width = next.width;
+            height = next.height;
             snprintf(status, sizeof(status), "%ux%u selected - 2 refreshes camera source", width,
                      height);
             menu = true;
@@ -860,6 +1081,12 @@ int main(void)
                 refresh_camera(width, height, status, sizeof(status));
                 idle_page = SCREEN_MENU;
                 menu = false;
+                continue;
+            }
+            if (screen_info.microphone) {
+                if (down & WPAD_BUTTON_A) microphone_test(width, height, status, sizeof(status));
+                idle_page = SCREEN_MENU;
+                menu = true;
                 continue;
             }
             draw_screen(SCREEN_WAITING, NULL, width, height, "CONNECTING CAMERA");

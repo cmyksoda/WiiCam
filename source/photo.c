@@ -3,6 +3,7 @@
  */
 
 #include "photo.h"
+#include "frame_limits.h"
 #include <jpeglib.h>
 #include <setjmp.h>
 #include <stdlib.h>
@@ -40,8 +41,9 @@ bool photo_decode(const uint8_t *jpeg, size_t length, uint8_t *rgb, unsigned wid
     jpeg_create_decompress(decoder);
     jpeg_mem_src(decoder, jpeg, length);
     jpeg_read_header(decoder, TRUE);
-    if (decoder->image_width != width || decoder->image_height != height || width > 640
-        || height > 480 || !width || !height || decoder->progressive_mode || decoder->arith_code)
+    if (decoder->image_width != width || decoder->image_height != height || width > WC04_MAX_WIDTH
+        || height > WC04_MAX_HEIGHT || !width || !height || decoder->progressive_mode
+        || decoder->arith_code)
         jpeg_failure((j_common_ptr)decoder);
     /* libjpeg-turbo supplies standard Huffman tables for abbreviated MJPEG. */
     decoder->out_color_space = JCS_RGB;
@@ -60,7 +62,7 @@ bool photo_encode(FILE *file, const uint8_t *rgb, unsigned width, unsigned heigh
 {
     struct jpeg_compress_struct *encoder = calloc(1, sizeof(*encoder));
     PhotoError error;
-    if (!encoder || !width || !height || width > 640 || height > 480) {
+    if (!encoder || !width || !height || width > WC04_MAX_WIDTH || height > WC04_MAX_HEIGHT) {
         free(encoder);
         return false;
     }

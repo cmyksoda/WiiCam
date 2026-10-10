@@ -42,6 +42,8 @@ HOST_CC ?= cc
 JPEG_CFLAGS ?=
 JPEG_LIBS ?= -ljpeg
 test: build/ui_assets.h | build
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c source/microphone.c tests/test_microphone.c -o build/test_microphone
+	./build/test_microphone
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c tests/test_uac.c -o build/test_uac
 	./build/test_uac
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c source/camera_inventory.c tests/test_camera_inventory.c -o build/test_camera_inventory
@@ -112,3 +114,8 @@ preview-ui: build/ui_assets.h
 .PHONY: test-export
 test-export: test-recording
 	python3 tests/test_export_mp4.py
+
+.PHONY: test-modes
+test-modes: build/ui_assets.h | build
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Ibuild -Isource source/uvc.c source/photo.c source/avi.c source/screen.c tests/test_video_modes.c $(JPEG_LIBS) -o build/test_video_modes
+	./build/test_video_modes

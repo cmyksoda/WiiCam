@@ -159,6 +159,7 @@ bool camera_find(const CameraEntry *entries, size_t count, unsigned width, unsig
                 ops->close(ops->context, opened);
                 continue;
             }
+            mode->supported_sizes = uvc_supported_sizes(scratch, length, entry->interface);
             *handle = opened;
             return true;
         }

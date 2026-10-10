@@ -78,7 +78,7 @@ UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned target, un
     if (!data || length < 9 || data[0] != 9 || data[1] != 2 || !data[5]
         || uvc_le16(data + 2) != length || target > 255)
         return UVC_MALFORMED;
-    if (!((width == 320 && height == 240) || (width == 640 && height == 480))) return UVC_NO_MODE;
+    if (!video_size_allowed(width, height)) return UVC_NO_MODE;
     /* Validate the whole descriptor walk before subsequent bounded passes. */
     for (size_t offset = 9; offset < length; offset += data[offset]) {
         if (length - offset < 2 || data[offset] < 2 || data[offset] > length - offset)
@@ -214,6 +214,18 @@ UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned target, un
         }
     }
     return mode->alt_count ? UVC_OK : UVC_TRANSPORT;
+}
+
+uint32_t uvc_supported_sizes(const uint8_t *data, size_t length, unsigned interface)
+{
+    uint32_t sizes = 0;
+    for (unsigned n = 0; n < VIDEO_SIZE_COUNT; ++n) {
+        VideoSize size = video_size(n);
+        UvcMode mode;
+        if (uvc_parse(data, length, interface, size.width, size.height, &mode) == UVC_OK)
+            sizes |= 1u << n;
+    }
+    return sizes;
 }
 
 bool uvc_alternate(const UvcMode *mode, uint32_t payload, UvcAlternate *alt)

@@ -20,7 +20,7 @@ typedef enum {
 
 typedef struct {
     const char *status;
-    bool sd, video, recording, shutter, refreshing;
+    bool sd, video, microphone, recording, shutter, refreshing;
     unsigned timer, countdown, seconds, refresh_phase;
 } ScreenInfo;
 

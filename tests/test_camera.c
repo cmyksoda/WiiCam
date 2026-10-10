@@ -241,11 +241,15 @@ int main(void)
     uvc_put32(descriptor + 17, WC04_FRAME_CAPACITY + 1);
     assert(!find_size(&f, 1, 640, 480, &handle, &mode));
     assert(f.closes[0] == 1 && f.reads[0] == 3 && (f.messages - f.inventory_messages) == 5);
-    assert(
-        strstr(f.messages_text,
-               "requested=640x480 reason=frame buffer exceeds capacity value=615425 bound=615424"));
-    assert(strstr(f.messages_text,
-                  "max_frame=615425 cap=615424 default_interval=333333 interval_count=2"));
+    char expected_limit[160];
+    snprintf(expected_limit, sizeof(expected_limit),
+             "requested=640x480 reason=frame buffer exceeds capacity value=%u bound=%u",
+             WC04_FRAME_CAPACITY + 1, WC04_FRAME_CAPACITY);
+    assert(strstr(f.messages_text, expected_limit));
+    snprintf(expected_limit, sizeof(expected_limit),
+             "max_frame=%u cap=%u default_interval=333333 interval_count=2",
+             WC04_FRAME_CAPACITY + 1, WC04_FRAME_CAPACITY);
+    assert(strstr(f.messages_text, expected_limit));
     assert(strstr(f.messages_text, "Discrete intervals from index 0: 333333 666666"));
     f = make_fake();
     f.configs[0] = fixture(5, 3, 0x83, true);
