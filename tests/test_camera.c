@@ -29,8 +29,8 @@ typedef struct {
     CameraEntry entries[2];
     Fixture configs[2];
     unsigned faults[2], opens[2], closes[2], reads[2], messages;
-    unsigned order[2], attempts;
-    char last_message[192], ios_message[192], messages_text[4096];
+    unsigned order[2], attempts, inventory_messages;
+    char last_message[192], ios_message[192], messages_text[32768];
 } Fake;
 
 static unsigned index_of(int32_t handle)
@@ -129,6 +129,7 @@ static void message(void *context, const CameraEntry *entry, const char *text)
     Fake *f = context;
     assert(entry && text && text[0]);
     ++f->messages;
+    if (!strncmp(text, "Inventory: ", 11)) ++f->inventory_messages;
     size_t used = strlen(f->messages_text);
     assert(strlen(text) < 192);
     int written = snprintf(f->messages_text + used, sizeof(f->messages_text) - used, "%s\n", text);
@@ -210,9 +211,9 @@ int main(void)
         assert(f.opens[0] == 1 && f.closes[0] == (fault == OPEN ? 0u : 1u));
         assert(strstr(f.last_message, expected[fault]) && mode.alt_count == 0);
         if (fault == OPEN || fault == PARAMETERS)
-            assert(f.messages == 1 && !f.ios_message[0]);
+            assert((f.messages - f.inventory_messages) == 1 && !f.ios_message[0]);
         else
-            assert(f.messages == 2 && f.ios_message[0]);
+            assert((f.messages - f.inventory_messages) == 2 && f.ios_message[0]);
         if (fault <= SWAPPED_ID) assert(f.reads[0] == 0);
         if (fault == SWAPPED_ID) assert(strstr(f.ios_message, "id=450c:6663"));
         f = make_fake();
@@ -239,7 +240,7 @@ int main(void)
     descriptor[8] = 1;
     uvc_put32(descriptor + 17, WC04_FRAME_CAPACITY + 1);
     assert(!find_size(&f, 1, 640, 480, &handle, &mode));
-    assert(f.closes[0] == 1 && f.reads[0] == 3 && f.messages == 5);
+    assert(f.closes[0] == 1 && f.reads[0] == 3 && (f.messages - f.inventory_messages) == 5);
     assert(
         strstr(f.messages_text,
                "requested=640x480 reason=frame buffer exceeds capacity value=615425 bound=615424"));
@@ -252,7 +253,7 @@ int main(void)
     assert(!find(&f, 1, &handle, &mode));
     assert(strstr(f.messages_text, "reason=zero continuous step value=0 bound=1"));
     assert(strstr(f.messages_text, "Continuous intervals: min=333333 max=9999990 step=0"));
-    assert(f.messages == 5 && f.closes[0] == 1);
+    assert((f.messages - f.inventory_messages) == 5 && f.closes[0] == 1);
     /* Maximum interval list with ten-digit values fits four bounded lines. */
     f = make_fake();
     Fixture *many = &f.configs[0];
@@ -270,7 +271,7 @@ int main(void)
         uvc_put32(many->data + many->frame + 26 + 4 * i, UINT32_MAX);
     uvc_put32(many->data + many->frame + 17, WC04_FRAME_CAPACITY + 1);
     assert(!find(&f, 1, &handle, &mode));
-    assert(f.messages == 8 && f.closes[0] == 1);
+    assert((f.messages - f.inventory_messages) == 8 && f.closes[0] == 1);
     assert(strstr(f.messages_text, "Discrete intervals from index 24: 4294967295 4294967295"));
     f = make_fake();
     assert(!find(&f, 33, &handle, &mode) && !f.attempts);

@@ -42,13 +42,15 @@ HOST_CC ?= cc
 JPEG_CFLAGS ?=
 JPEG_LIBS ?= -ljpeg
 test: build/ui_assets.h | build
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/camera_inventory.c tests/test_camera_inventory.c -o build/test_camera_inventory
+	./build/test_camera_inventory
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -pthread -Isource source/refresh_control.c tests/test_refresh_control.c -o build/test_refresh_control
 	./build/test_refresh_control
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_uvc_diagnostics.c -o build/test_uvc_diagnostics
 	./build/test_uvc_diagnostics
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_uvc_generic.c -o build/test_uvc_generic
 	./build/test_uvc_generic
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/camera.c tests/test_camera.c -o build/test_camera
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/camera_inventory.c source/camera.c tests/test_camera.c -o build/test_camera
 	./build/test_camera
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/avi.c tests/test_avi.c -o build/test_avi
 	./build/test_avi
@@ -104,3 +106,7 @@ preview-ui: build/ui_assets.h
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ibuild -Isource source/screen.c source/refresh_control.c tests/render_ui.c -o build/render_ui
 	./build/render_ui
 	python3 tools/preview_ui.py
+
+.PHONY: test-export
+test-export: test-recording
+	python3 tests/test_export_mp4.py
