@@ -180,6 +180,30 @@ int main(void)
         assert(pcm.failed == !valid);
     }
     microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
+    pcm.rejection_budget = MIC_MAX_REJECTED_PACKETS;
+    memset(samples + 1, 0x55, MIC_BYTES);
+    const size_t invalid_lengths[] = {31, 193, 194, 65535};
+    for (unsigned n = 0; n < 4; ++n) {
+        assert(microphone_pcm_packet(&pcm, packet, 32, 192));
+        size_t before = pcm.size;
+        assert(microphone_pcm_packet(&pcm, packet, invalid_lengths[n], 192));
+        assert(pcm.size == before && pcm.rejected == n + 1 && !pcm.failed);
+        assert(pcm.rejected_lengths[n] == invalid_lengths[n]
+               && pcm.rejected_indices[n] == n * 2 + 1);
+        assert(pcm.data[pcm.size] == 0x55);
+    }
+    assert(pcm.packets == 4 && pcm.size == 128);
+    assert(!microphone_pcm_packet(&pcm, packet, 33, 192));
+    assert(pcm.failed && pcm.rejected == 5 && pcm.size == 128);
+    assert(!microphone_capture_valid(MIC_RATE_UNREADABLE, &pcm, 5000));
+    assert(samples[0] == 0xa5 && samples[MIC_BYTES + 1] == 0x5a);
+    microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
+    pcm.rejection_budget = MIC_MAX_REJECTED_PACKETS;
+    assert(!microphone_pcm_packet(&pcm, NULL, 32, 192));
+    microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
+    pcm.rejection_budget = MIC_MAX_REJECTED_PACKETS + 1;
+    assert(!microphone_pcm_packet(&pcm, packet, 32, 192) && !pcm.size);
+    microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
     assert(!microphone_capture_valid(MIC_RATE_OK, &pcm, 5000));
     assert(!microphone_capture_valid(MIC_RATE_UNREADABLE, &pcm, 5000));
     FILE *partial = tmpfile();
@@ -187,5 +211,5 @@ int main(void)
     fclose(partial);
     free(samples);
     puts(
-        "PASS: physical UAC fields, ambiguous/changed IOS pairing, strict rate controls, observed readback exception, timing guard, packet bounds, PCM/WAV and partial rejection");
+        "PASS: physical UAC fields, ambiguous/changed IOS pairing, strict rate controls, observed readback exception, timing guard, bounded whole-packet rejection, packet bounds, PCM/WAV and partial rejection");
 }

@@ -120,10 +120,21 @@ void microphone_pcm_init(MicPcm *pcm, uint8_t *data, size_t capacity)
 bool microphone_pcm_packet(MicPcm *pcm, const uint8_t *data, size_t length, unsigned packet_cap)
 {
     if (!pcm || pcm->failed) return false;
-    if (!data || !packet_cap || packet_cap > 1024 || length > packet_cap || (length & 1)
-        || pcm->size > pcm->capacity) {
+    if (!data || !packet_cap || packet_cap > 1024 || pcm->size > pcm->capacity
+        || pcm->rejection_budget > MIC_MAX_REJECTED_PACKETS) {
         pcm->failed = true;
         return false;
+    }
+    if (length > packet_cap || (length & 1)) {
+        unsigned rejected = pcm->rejected++;
+        if (rejected < MIC_MAX_REJECTED_PACKETS) {
+            pcm->rejected_lengths[rejected] = length;
+            pcm->rejected_indices[rejected] = pcm->packets + rejected;
+        }
+        /* Discard the entire invalid slot without reading it. Only the observed
+         * camera's diagnostic path opts into this small, logged loss budget. */
+        pcm->failed = pcm->rejected > pcm->rejection_budget;
+        return !pcm->failed;
     }
     ++pcm->packets;
     if (!length) ++pcm->empty;

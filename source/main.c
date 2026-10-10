@@ -809,10 +809,11 @@ static bool mic_consume(void *context, const IsoSlot *slot)
 {
     MicTest *test = context;
     for (unsigned n = 0; n < ISO_PACKETS; ++n) {
+        size_t before = test->pcm.size;
         if (!microphone_pcm_packet(&test->pcm, slot->data + n * test->mode.packet_capacity,
                                    slot->sizes[n], test->mode.packet_capacity))
             return true;
-        if (slot->sizes[n]) {
+        if (test->pcm.size > before) {
             test->last_packet = gettime();
             if (!test->first_packet) test->first_packet = test->last_packet;
         }
@@ -928,6 +929,7 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
     if (samples && WC04_SetAlternate(test.handle, 0) >= 0
         && WC04_SetAlternate(test.handle, test.mode.alternate) >= 0)
         rate = microphone_set_rate(&test.entry, &test.mode, mic_control, &test, probe);
+    if (rate == MIC_RATE_UNREADABLE) test.pcm.rejection_budget = MIC_MAX_REJECTED_PACKETS;
     if (rate == MIC_RATE_UNREADABLE)
         report("Microphone 0c45:6366 rate readback unavailable (-7102) after exact SET; "
                "diagnostic capture requires 4500..5500 ms packet span before WAV save.\n");
@@ -950,7 +952,7 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
         IsoStop stop = iso_queue_run(&queue, &hooks, &test);
         unsigned elapsed = (unsigned)ticks_to_millisecs(gettime() - test.start);
         report("Microphone result: bytes=%u samples=%u packets=%u empty=%u lengths=%u..%u "
-               "peak=%u malformed=%u elapsed_ms=%u first_packet_ms=%llu last_packet_ms=%llu\n",
+               "peak=%u fatal=%u elapsed_ms=%u first_packet_ms=%llu last_packet_ms=%llu\n",
                (unsigned)test.pcm.size, (unsigned)test.pcm.size / 2, test.pcm.packets,
                test.pcm.empty, test.pcm.packets ? test.pcm.smallest : 0, test.pcm.largest,
                test.pcm.peak, test.pcm.failed, elapsed,
@@ -960,6 +962,13 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
                (unsigned long long)(test.last_packet
                                         ? ticks_to_millisecs(test.last_packet - test.start)
                                         : 0));
+        report("Microphone packet rejection: rejected=%u budget=%u; invalid slots never copied.\n",
+               test.pcm.rejected, test.pcm.rejection_budget);
+        for (unsigned n = 0; n < test.pcm.rejected && n < MIC_MAX_REJECTED_PACKETS; ++n)
+            report("Microphone rejected packet: index=%u slot=%u length=%u cap=%u odd=%u\n",
+                   test.pcm.rejected_indices[n], test.pcm.rejected_indices[n] % ISO_PACKETS,
+                   (unsigned)test.pcm.rejected_lengths[n], test.mode.packet_capacity,
+                   (unsigned)(test.pcm.rejected_lengths[n] & 1));
         report("Microphone queue: submitted=%u consumed=%u drained=%u failure=%d\n",
                queue.submitted, queue.consumed, queue.drained, queue.failure);
         uint64_t span_ms = test.first_packet && test.last_packet >= test.first_packet
@@ -1030,7 +1039,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.1.1 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.1.2 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Bounded sizes and explicit 5-second microphone test enabled. Video recording is silent.\n");

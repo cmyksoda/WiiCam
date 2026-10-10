@@ -8,6 +8,7 @@
 #define MIC_RATE 16000u
 #define MIC_SECONDS 5u
 #define MIC_BYTES (MIC_RATE * MIC_SECONDS * 2u)
+#define MIC_MAX_REJECTED_PACKETS 4u
 
 typedef struct {
     CameraEntry camera;
@@ -18,6 +19,9 @@ typedef struct {
     uint8_t *data;
     size_t size, capacity;
     unsigned packets, empty, smallest, largest, peak;
+    unsigned rejection_budget, rejected;
+    size_t rejected_lengths[MIC_MAX_REJECTED_PACKETS];
+    unsigned rejected_indices[MIC_MAX_REJECTED_PACKETS];
     bool failed;
 } MicPcm;
 
