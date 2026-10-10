@@ -15,6 +15,7 @@ typedef struct {
     uint32_t offsets[AVI_MAX_FRAMES], lengths[AVI_MAX_FRAMES];
     bool failed, finished;
 } Avi;
+
 /* Single writer. Caller closes the file and checks flush/close errors too. */
 bool avi_begin(Avi *avi, FILE *file, unsigned width, unsigned height);
 bool avi_has_space(const Avi *avi, size_t length);

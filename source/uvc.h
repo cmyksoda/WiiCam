@@ -27,8 +27,8 @@ enum {
 };
 
 /* Return payload bytes transferred, excluding the USB setup packet. */
-typedef int (*UvcControlTransfer)(void *context, uint8_t request,
-                                  uint16_t selector, uint8_t data[UVC_PROBE_LENGTH]);
+typedef int (*UvcControlTransfer)(void *context, uint8_t request, uint16_t selector,
+                                  uint8_t data[UVC_PROBE_LENGTH]);
 
 typedef struct {
     uint8_t number, endpoint;
@@ -84,21 +84,26 @@ typedef struct {
 uint16_t uvc_le16(const uint8_t *p);
 uint32_t uvc_le32(const uint8_t *p);
 void uvc_put32(uint8_t *p, uint32_t value);
+
 typedef enum {
-    UVC_OK, UVC_MALFORMED, UVC_ASSOCIATION, UVC_VERSION,
-    UVC_NO_MODE, UVC_LIMIT, UVC_TRANSPORT
+    UVC_OK,
+    UVC_MALFORMED,
+    UVC_ASSOCIATION,
+    UVC_VERSION,
+    UVC_NO_MODE,
+    UVC_LIMIT,
+    UVC_TRANSPORT
 } UvcParseResult;
 
-UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned interface,
-                         unsigned width, unsigned height, UvcMode *mode);
+UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned interface, unsigned width,
+                         unsigned height, UvcMode *mode);
 const char *uvc_parse_description(UvcParseResult result);
 int uvc_control_payload_length(int result, unsigned requested);
 bool uvc_interval_supported(const UvcMode *mode, uint32_t interval);
 bool uvc_alternate(const UvcMode *mode, uint32_t payload, UvcAlternate *alt);
 void uvc_probe_select(uint8_t data[UVC_PROBE_LENGTH], const UvcMode *mode);
-bool uvc_negotiate(const UvcMode *mode, UvcAlternate *alt,
-                   uint8_t data[UVC_PROBE_LENGTH], UvcControlTransfer transfer,
-                   void *context);
+bool uvc_negotiate(const UvcMode *mode, UvcAlternate *alt, uint8_t data[UVC_PROBE_LENGTH],
+                   UvcControlTransfer transfer, void *context);
 void uvc_frame_init(UvcFrame *frame, uint8_t *data, size_t capacity);
 bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length);
 

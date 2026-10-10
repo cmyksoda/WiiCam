@@ -21,17 +21,14 @@ static void jpeg_failure(j_common_ptr common)
 
 static void jpeg_message(j_common_ptr common, int level)
 {
-    if (level < 0)
-        jpeg_failure(common);
+    if (level < 0) jpeg_failure(common);
 }
 
-bool photo_decode(const uint8_t *jpeg, size_t length, uint8_t *rgb,
-                  unsigned width, unsigned height)
+bool photo_decode(const uint8_t *jpeg, size_t length, uint8_t *rgb, unsigned width, unsigned height)
 {
     struct jpeg_decompress_struct *decoder = calloc(1, sizeof(*decoder));
     PhotoError error;
-    if (!decoder)
-        return false;
+    if (!decoder) return false;
     decoder->err = jpeg_std_error(&error.base);
     error.base.error_exit = jpeg_failure;
     error.base.emit_message = jpeg_message;
@@ -43,9 +40,8 @@ bool photo_decode(const uint8_t *jpeg, size_t length, uint8_t *rgb,
     jpeg_create_decompress(decoder);
     jpeg_mem_src(decoder, jpeg, length);
     jpeg_read_header(decoder, TRUE);
-    if (decoder->image_width != width || decoder->image_height != height ||
-        width > 640 || height > 480 || !width || !height ||
-        decoder->progressive_mode || decoder->arith_code)
+    if (decoder->image_width != width || decoder->image_height != height || width > 640
+        || height > 480 || !width || !height || decoder->progressive_mode || decoder->arith_code)
         jpeg_failure((j_common_ptr)decoder);
     /* libjpeg-turbo supplies standard Huffman tables for abbreviated MJPEG. */
     decoder->out_color_space = JCS_RGB;

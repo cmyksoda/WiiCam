@@ -58,13 +58,14 @@ s32 WC04_SetAlternate(s32 device_id, u8 alternate);
 s32 WC04_CancelIso(s32 device_id, u8 endpoint);
 s32 WC04_GetInterfaceParameters(s32 device_id, u8 *parameters);
 
-static void draw_screen_info(ScreenPage page, const uint8_t *pixels,
-                             unsigned width, unsigned height, const ScreenInfo *info)
+static void draw_screen_info(ScreenPage page, const uint8_t *pixels, unsigned width,
+                             unsigned height, const ScreenInfo *info)
 {
-    Screen screen = {
-        .pixels = xfb[back_buffer], .width = video->fbWidth, .height = video->xfbHeight,
-        .stride = VIDEO_PadFramebufferWidth(video->fbWidth), .widescreen = widescreen
-    };
+    Screen screen = {.pixels = xfb[back_buffer],
+                     .width = video->fbWidth,
+                     .height = video->xfbHeight,
+                     .stride = VIDEO_PadFramebufferWidth(video->fbWidth),
+                     .widescreen = widescreen};
     screen_draw(&screen, page, pixels, width, height, info);
     DCFlushRange(xfb[back_buffer], VIDEO_GetFrameBufferSize(video));
     VIDEO_SetNextFramebuffer(xfb[back_buffer]);
@@ -76,8 +77,8 @@ static void draw_screen_info(ScreenPage page, const uint8_t *pixels,
     back_buffer ^= 1;
 }
 
-static void draw_screen(ScreenPage page, const uint8_t *pixels,
-                        unsigned width, unsigned height, const char *status)
+static void draw_screen(ScreenPage page, const uint8_t *pixels, unsigned width, unsigned height,
+                        const char *status)
 {
     ScreenInfo info = screen_info;
     info.sd = mounted;
@@ -87,12 +88,11 @@ static void draw_screen(ScreenPage page, const uint8_t *pixels,
 
 static bool allocate_usb_buffers(void)
 {
-    const size_t bytes = CONFIG_CAPACITY + 32 + ISO_QUEUE_DEPTH * ISO_DATA_BYTES +
-                         ISO_QUEUE_DEPTH * ISO_PACKETS * sizeof(uint16_t);
+    const size_t bytes = CONFIG_CAPACITY + 32 + ISO_QUEUE_DEPTH * ISO_DATA_BYTES
+                         + ISO_QUEUE_DEPTH * ISO_PACKETS * sizeof(uint16_t);
     uintptr_t high = (uintptr_t)SYS_GetArena2Hi() & ~(uintptr_t)31;
     uintptr_t low = (uintptr_t)SYS_GetArena2Lo();
-    if (high < low || high - low < bytes)
-        return false;
+    if (high < low || high - low < bytes) return false;
     /* Reserve MEM2 before other subsystems start; leave the small IPC heap free. */
     config = (uint8_t *)(high - bytes);
     SYS_SetArena2Hi(config);
@@ -116,10 +116,8 @@ static void report(const char *format, ...)
         va_start(args, format);
         int length = vsnprintf(message, sizeof(message), format, args);
         va_end(args);
-        if (length >= 0)
-            log_text(message);
-        if (length >= (int)sizeof(message))
-            log_text("Log message truncated.\n");
+        if (length >= 0) log_text(message);
+        if (length >= (int)sizeof(message)) log_text("Log message truncated.\n");
         fflush(log_file);
     }
 }
@@ -157,8 +155,7 @@ static uint32_t buttons(void)
 {
     WPAD_ScanPads();
     uint32_t down = WPAD_ButtonsDown(0);
-    if (down & WPAD_BUTTON_HOME)
-        exit_requested = true;
+    if (down & WPAD_BUTTON_HOME) exit_requested = true;
     return down;
 }
 
@@ -171,8 +168,7 @@ static s32 iso_finished(s32 result, void *context)
 static bool ensure_directory(const char *path)
 {
     struct stat st;
-    if (stat(path, &st) == 0)
-        return S_ISDIR(st.st_mode);
+    if (stat(path, &st) == 0) return S_ISDIR(st.st_mode);
     return mkdir(path, 0777) == 0;
 }
 
@@ -182,8 +178,7 @@ static int camera_open(void *context, const CameraEntry *entry, int32_t *handle)
     s32 device;
     int result = USB_OpenDevice(entry->id, entry->vid, entry->pid, &device);
     /* Negative vendor handles are valid; only the return code signals failure. */
-    if (result >= 0)
-        *handle = device;
+    if (result >= 0) *handle = device;
     return result;
 }
 
@@ -193,13 +188,13 @@ static int camera_parameters(void *context, int32_t handle, uint8_t *data)
     return WC04_GetInterfaceParameters(handle, data);
 }
 
-static int camera_read(void *context, int32_t handle, uint8_t request,
-                       uint16_t value, uint16_t length, uint8_t *data)
+static int camera_read(void *context, int32_t handle, uint8_t request, uint16_t value,
+                       uint16_t length, uint8_t *data)
 {
     (void)context;
     int result = USB_ReadCtrlMsg(handle, 0x80, request, value, 0, length, data);
-    report("Descriptor/control request %u value %04x length %u: raw %d, payload %d\n",
-           request, value, length, result, uvc_control_payload_length(result, length));
+    report("Descriptor/control request %u value %04x length %u: raw %d, payload %d\n", request,
+           value, length, result, uvc_control_payload_length(result, length));
     return result;
 }
 
@@ -213,8 +208,8 @@ static void camera_close(void *context, int32_t handle)
 static void camera_report(void *context, const CameraEntry *entry, const char *message)
 {
     (void)context;
-    report("Candidate %04x:%04x interface %u: %s\n", entry->vid, entry->pid,
-           entry->interface, message);
+    report("Candidate %04x:%04x interface %u: %s\n", entry->vid, entry->pid, entry->interface,
+           message);
 }
 
 static bool find_camera(s32 *handle, unsigned width, unsigned height, UvcMode *mode)
@@ -224,24 +219,25 @@ static bool find_camera(s32 *handle, unsigned width, unsigned height, UvcMode *m
     u8 count = 0;
     s32 result = USB_GetDeviceList(devices, CAMERA_MAX_DEVICES, 0, &count);
     report("USB enumeration: %ld, interfaces: %u; actual bus speed unknown\n", (long)result, count);
-    if (result < 0 || count > CAMERA_MAX_DEVICES)
-        return false;
+    if (result < 0 || count > CAMERA_MAX_DEVICES) return false;
     for (unsigned i = 0; i < count; ++i)
         entries[i] = (CameraEntry){devices[i].device_id, devices[i].vid, devices[i].pid,
                                    (uint8_t)(devices[i].token >> 8)};
-    const CameraOps ops = {
-        .open = camera_open, .parameters = camera_parameters, .read = camera_read,
-        .close = camera_close, .report = camera_report
-    };
+    const CameraOps ops = {.open = camera_open,
+                           .parameters = camera_parameters,
+                           .read = camera_read,
+                           .close = camera_close,
+                           .report = camera_report};
     int32_t selected;
-    if (!camera_find(entries, count, width, height, config, CONFIG_CAPACITY, &ops, &selected, mode)) {
+    if (!camera_find(entries, count, width, height, config, CONFIG_CAPACITY, &ops, &selected,
+                     mode)) {
         report("No supported camera mode. UVC 1.0 MJPEG, 320x240/640x480, interval-1 ISO only.\n");
         return false;
     }
     *handle = selected;
     report("Selected VC %u / VS %u / endpoint %02x / MJPEG format %u frame %u, %ux%u\n",
-           mode->control_interface, mode->interface, mode->endpoint, mode->format,
-           mode->frame, mode->width, mode->height);
+           mode->control_interface, mode->interface, mode->endpoint, mode->format, mode->frame,
+           mode->width, mode->height);
     report("Descriptor default interval %lu; other-camera operation is unverified.\n",
            (unsigned long)mode->interval);
     return true;
@@ -258,8 +254,7 @@ static void *refresh_worker(void *context)
     s32 handle;
     UvcMode mode;
     bool found = find_camera(&handle, job->width, job->height, &mode);
-    if (found)
-        USB_CloseDevice(&handle);
+    if (found) USB_CloseDevice(&handle);
     refresh_control_complete(&job->control, found);
     return NULL;
 }
@@ -277,8 +272,8 @@ static void refresh_camera(unsigned width, unsigned height, char *status, size_t
     /* Present the loading circle before any potentially blocking USB call. */
     draw_screen_info(SCREEN_MENU, NULL, width, height, &info);
     lwp_t worker;
-    if (LWP_CreateThread(&worker, refresh_worker, &job, worker_stack,
-                         sizeof(worker_stack), 60) < 0) {
+    if (LWP_CreateThread(&worker, refresh_worker, &job, worker_stack, sizeof(worker_stack), 60)
+        < 0) {
         snprintf(status, capacity, "Refresh unavailable - press 2 to retry");
         draw_screen(SCREEN_MENU, NULL, width, height, status);
         return;
@@ -287,8 +282,7 @@ static void refresh_camera(unsigned width, unsigned height, char *status, size_t
     while (result == REFRESH_BUSY || result == REFRESH_CANCELLING) {
         uint32_t down = buttons();
         result = refresh_control_poll(&job.control, exit_requested || (down & WPAD_BUTTON_B));
-        if (result != REFRESH_BUSY && result != REFRESH_CANCELLING)
-            break;
+        if (result != REFRESH_BUSY && result != REFRESH_CANCELLING) break;
         unsigned phase = (unsigned)(ticks_to_millisecs(gettime()) / 100) & 7;
         if (phase != info.refresh_phase || result != previous) {
             info.refresh_phase = phase;
@@ -302,11 +296,12 @@ static void refresh_camera(unsigned width, unsigned height, char *status, size_t
      * Navigation/repeated refresh presses were consumed, not queued for replay. */
     LWP_JoinThread(worker, NULL);
     refresh_status(status, capacity, result, width, height);
-    report("Refresh camera source %ux%u (descriptors only): %s; stream not started.\n",
-           width, height, result == REFRESH_CANCELLED ? "cancelled" :
-           result == REFRESH_FOUND ? "mode found" : "no supported mode found");
-    if (!exit_requested)
-        draw_screen(SCREEN_MENU, NULL, width, height, status);
+    report("Refresh camera source %ux%u (descriptors only): %s; stream not started.\n", width,
+           height,
+           result == REFRESH_CANCELLED ? "cancelled"
+           : result == REFRESH_FOUND   ? "mode found"
+                                       : "no supported mode found");
+    if (!exit_requested) draw_screen(SCREEN_MENU, NULL, width, height, status);
 }
 
 typedef struct {
@@ -318,31 +313,31 @@ static int probe_transfer(void *context, uint8_t request, uint16_t selector,
                           uint8_t data[UVC_PROBE_LENGTH])
 {
     const ProbeContext *camera = context;
-    const char *operation = request == UVC_SET_CUR ? "SET_CUR" :
-                            request == UVC_GET_MAX ? "GET_MAX" :
-                            request == UVC_GET_DEF ? "GET_DEF" : "GET_CUR";
+    const char *operation = request == UVC_SET_CUR   ? "SET_CUR"
+                            : request == UVC_GET_MAX ? "GET_MAX"
+                            : request == UVC_GET_DEF ? "GET_DEF"
+                                                     : "GET_CUR";
     const char *control = selector == UVC_VS_PROBE ? "PROBE" : "COMMIT";
     report("%s %s (%u payload bytes):\n", operation, control, UVC_PROBE_LENGTH);
     s32 result;
     if (request == UVC_SET_CUR) {
         log_hex(data, UVC_PROBE_LENGTH);
-        result = USB_WriteCtrlMsg(camera->handle, 0x21, request, selector,
-                                  camera->interface, UVC_PROBE_LENGTH, data);
+        result = USB_WriteCtrlMsg(camera->handle, 0x21, request, selector, camera->interface,
+                                  UVC_PROBE_LENGTH, data);
     } else {
-        result = USB_ReadCtrlMsg(camera->handle, 0xa1, request, selector,
-                                 camera->interface, UVC_PROBE_LENGTH, data);
+        result = USB_ReadCtrlMsg(camera->handle, 0xa1, request, selector, camera->interface,
+                                 UVC_PROBE_LENGTH, data);
     }
     /* IOS58 counts the eight-byte setup packet in control completions. */
     int length = uvc_control_payload_length(result, UVC_PROBE_LENGTH);
-    report("%s %s result: %ld; payload count: %d\n", operation, control,
-           (long)result, length);
+    report("%s %s result: %ld; payload count: %d\n", operation, control, (long)result, length);
     if (request != UVC_SET_CUR && length > 0)
         log_hex(data, length < UVC_PROBE_LENGTH ? (unsigned)length : UVC_PROBE_LENGTH);
     if (length == UVC_PROBE_LENGTH) {
-        report("Probe fields: format %u frame %u interval %lu quality %u\n",
-               data[2], data[3], (unsigned long)uvc_le32(data + 4), uvc_le16(data + 12));
-        report("Frame limit %lu, payload limit %lu\n",
-               (unsigned long)uvc_le32(data + 18), (unsigned long)uvc_le32(data + 22));
+        report("Probe fields: format %u frame %u interval %lu quality %u\n", data[2], data[3],
+               (unsigned long)uvc_le32(data + 4), uvc_le16(data + 12));
+        report("Frame limit %lu, payload limit %lu\n", (unsigned long)uvc_le32(data + 18),
+               (unsigned long)uvc_le32(data + 22));
     }
     return length;
 }
@@ -361,8 +356,8 @@ static bool negotiate(s32 handle, const UvcMode *mode, UvcAlternate *alt)
         return false;
     }
     result = WC04_SetAlternate(handle, alt->number);
-    report("Streaming alternate %u, endpoint %02x, capacity %u: %ld\n",
-           alt->number, alt->endpoint, alt->capacity, (long)result);
+    report("Streaming alternate %u, endpoint %02x, capacity %u: %ld\n", alt->number, alt->endpoint,
+           alt->capacity, (long)result);
     return result >= 0;
 }
 
@@ -372,8 +367,7 @@ typedef struct {
     uint8_t data[32];
 } PacketSample;
 
-static void sample_packet(PacketSample *sample, const uint8_t *data,
-                          unsigned slot, unsigned length,
+static void sample_packet(PacketSample *sample, const uint8_t *data, unsigned slot, unsigned length,
                           unsigned offset, uint64_t start)
 {
     sample->slot = slot;
@@ -387,9 +381,10 @@ static void sample_packet(PacketSample *sample, const uint8_t *data,
 static void log_sample(const char *label, const PacketSample *sample)
 {
     char line[160];
-    snprintf(line, sizeof(line), "%s at capture +%llu ms: slot=%u size=%u offset=%u prefix=%u bytes",
-             label, (unsigned long long)sample->elapsed_ms, sample->slot,
-             sample->length, sample->offset, sample->copied);
+    snprintf(line, sizeof(line),
+             "%s at capture +%llu ms: slot=%u size=%u offset=%u prefix=%u bytes", label,
+             (unsigned long long)sample->elapsed_ms, sample->slot, sample->length, sample->offset,
+             sample->copied);
     log_text(line);
     log_hex(sample->data, sample->copied);
 }
@@ -417,7 +412,6 @@ typedef struct {
     bool video_mode;
 } Capture;
 
-
 static void *preview_worker(void *context)
 {
     Capture *capture = context;
@@ -426,47 +420,46 @@ static void *preview_worker(void *context)
         bool have_frame = preview_take(&capture->preview);
         if (have_frame) {
             uint64_t decode_start = gettime();
-            bool decoded = photo_decode(capture->preview.jpeg, capture->preview.length,
-                                        decode_rgb, capture->mode->width, capture->mode->height);
-            uint64_t decode_time = gettime()-decode_start;
-            if (decode_time > capture->max_decode_time)
-                capture->max_decode_time = decode_time;
+            bool decoded = photo_decode(capture->preview.jpeg, capture->preview.length, decode_rgb,
+                                        capture->mode->width, capture->mode->height);
+            uint64_t decode_time = gettime() - decode_start;
+            if (decode_time > capture->max_decode_time) capture->max_decode_time = decode_time;
             if (decoded) {
-                memcpy(rgb, decode_rgb, (size_t)capture->mode->width*capture->mode->height*3);
+                memcpy(rgb, decode_rgb, (size_t)capture->mode->width * capture->mode->height * 3);
                 ++capture->decoded;
-                unsigned elapsed = (unsigned)ticks_to_millisecs(gettime()-capture->start);
-                if (capture->decoded == 1)
-                    capture->first_decoded_ms = elapsed;
+                unsigned elapsed = (unsigned)ticks_to_millisecs(gettime() - capture->start);
+                if (capture->decoded == 1) capture->first_decoded_ms = elapsed;
                 atomic_store_explicit(&capture->last_decoded_ms, elapsed, memory_order_release);
                 uint64_t write_start = gettime();
-                unsigned state = atomic_load_explicit(&capture->record_control.state, memory_order_acquire);
+                unsigned state =
+                    atomic_load_explicit(&capture->record_control.state, memory_order_acquire);
                 if (record_control_begin(&capture->record_control)) {
-                    bool ready = ensure_directory("sd:/wc04-camera/videos") &&
-                        recorder_start(&recording, "sd:/wc04-camera/videos",
-                                       capture->mode->width, capture->mode->height, elapsed);
-                    if (!ready)
-                        recording.failed = true;
+                    bool ready =
+                        ensure_directory("sd:/wc04-camera/videos")
+                        && recorder_start(&recording, "sd:/wc04-camera/videos",
+                                          capture->mode->width, capture->mode->height, elapsed);
+                    if (!ready) recording.failed = true;
                     record_control_started(&capture->record_control, ready, elapsed);
                     state = atomic_load(&capture->record_control.state);
                 }
-                if (state == RECORD_ACTIVE &&
-                    !recorder_frame(&recording, capture->preview.jpeg, capture->preview.length, elapsed))
+                if (state == RECORD_ACTIVE
+                    && !recorder_frame(&recording, capture->preview.jpeg, capture->preview.length,
+                                       elapsed))
                     record_control_result(&capture->record_control,
                                           recording.limited ? RECORD_LIMIT : RECORD_FAILED);
-                uint64_t write_time = gettime()-write_start;
+                uint64_t write_time = gettime() - write_start;
                 if (state != RECORD_READY && write_time > capture->max_video_write_time)
                     capture->max_video_write_time = write_time;
             } else
                 ++capture->rejected;
             preview_finish(&capture->preview, decoded);
         }
-        if (atomic_load_explicit(&capture->worker_stop, memory_order_acquire))
-            break;
+        if (atomic_load_explicit(&capture->worker_stop, memory_order_acquire)) break;
         uint64_t now = gettime();
-        if (!last_draw || ticks_to_millisecs(now-last_draw) >= 66) {
-            unsigned elapsed = (unsigned)ticks_to_millisecs(now-capture->start);
+        if (!last_draw || ticks_to_millisecs(now - last_draw) >= 66) {
+            unsigned elapsed = (unsigned)ticks_to_millisecs(now - capture->start);
             unsigned last = atomic_load(&capture->last_decoded_ms);
-            unsigned age = elapsed >= last ? elapsed-last : 0;
+            unsigned age = elapsed >= last ? elapsed - last : 0;
             bool signal = last && age < 1000;
             ScreenInfo info = screen_info;
             info.sd = mounted;
@@ -475,7 +468,9 @@ static void *preview_worker(void *context)
             info.shutter = atomic_load(&capture->preview.shutter);
             unsigned state = atomic_load(&capture->record_control.state);
             info.recording = state == RECORD_ACTIVE;
-            info.seconds = info.recording ? (elapsed-atomic_load(&capture->record_control.started_ms))/1000 : 0;
+            info.seconds = info.recording
+                               ? (elapsed - atomic_load(&capture->record_control.started_ms)) / 1000
+                               : 0;
             if (state == RECORD_REQUESTED || state == RECORD_STARTING)
                 info.status = "Starting video...";
             draw_screen_info(signal ? SCREEN_LIVE : SCREEN_NO_SIGNAL, signal ? rgb : NULL,
@@ -483,8 +478,7 @@ static void *preview_worker(void *context)
             last_draw = now;
             ++capture->displayed;
         }
-        if (!have_frame)
-            usleep(1000);
+        if (!have_frame) usleep(1000);
     }
     /* Only this worker writes the video; finalize before its join returns. */
     if (recording.active)
@@ -495,14 +489,22 @@ static void *preview_worker(void *context)
 static const char *stop_description(IsoStop stop)
 {
     switch (stop) {
-    case ISO_PHOTO_READY: return "shutter photo decoded";
-    case ISO_RECORD_STOPPED: return "video stopped or limit/write failure";
-    case ISO_CANCELLED: return "B pressed";
-    case ISO_EXIT: return "HOME/power/reset exit requested";
-    case ISO_TIMEOUT: return "no decoded frame for 10 seconds";
-    case ISO_SUBMIT_FAILED: return "USB submission failure";
-    case ISO_COMPLETION_FAILED: return "USB completion failure before cancellation";
-    default: return "capture running";
+    case ISO_PHOTO_READY:
+        return "shutter photo decoded";
+    case ISO_RECORD_STOPPED:
+        return "video stopped or limit/write failure";
+    case ISO_CANCELLED:
+        return "B pressed";
+    case ISO_EXIT:
+        return "HOME/power/reset exit requested";
+    case ISO_TIMEOUT:
+        return "no decoded frame for 10 seconds";
+    case ISO_SUBMIT_FAILED:
+        return "USB submission failure";
+    case ISO_COMPLETION_FAILED:
+        return "USB completion failure before cancellation";
+    default:
+        return "capture running";
     }
 }
 
@@ -515,45 +517,37 @@ static IsoStop poll_capture(void *context)
         down = buttons();
         capture->last_input = now;
     }
-    unsigned elapsed = (unsigned)ticks_to_millisecs(now-capture->start);
+    unsigned elapsed = (unsigned)ticks_to_millisecs(now - capture->start);
     unsigned last = atomic_load_explicit(&capture->last_decoded_ms, memory_order_acquire);
-    unsigned age = elapsed >= last ? elapsed-last : 0;
+    unsigned age = elapsed >= last ? elapsed - last : 0;
     bool signal = last && age < 1000;
     if (capture->video_mode) {
-        if (exit_requested)
-            return ISO_EXIT;
-        if (down & WPAD_BUTTON_B)
-            return ISO_CANCELLED;
+        if (exit_requested) return ISO_EXIT;
+        if (down & WPAD_BUTTON_B) return ISO_CANCELLED;
         unsigned state = atomic_load(&capture->record_control.state);
         unsigned started = atomic_load(&capture->record_control.started_ms);
-        if (state == RECORD_FAILED || state == RECORD_LIMIT ||
-            (state == RECORD_ACTIVE && elapsed >= started && elapsed-started >= AVI_MAX_MS))
+        if (state == RECORD_FAILED || state == RECORD_LIMIT
+            || (state == RECORD_ACTIVE && elapsed >= started && elapsed - started >= AVI_MAX_MS))
             return ISO_RECORD_STOPPED;
         if (down & WPAD_BUTTON_A) {
-            if (state != RECORD_READY)
-                return ISO_RECORD_STOPPED;
-            if (mounted && signal)
-                record_control_request(&capture->record_control);
+            if (state != RECORD_READY) return ISO_RECORD_STOPPED;
+            if (mounted && signal) record_control_request(&capture->record_control);
         }
     } else {
-        CaptureAction action = capture_control_update(&capture->control, elapsed,
-            down & WPAD_BUTTON_A, down & WPAD_BUTTON_B, exit_requested, signal, mounted);
+        CaptureAction action =
+            capture_control_update(&capture->control, elapsed, down & WPAD_BUTTON_A,
+                                   down & WPAD_BUTTON_B, exit_requested, signal, mounted);
         atomic_store(&capture->countdown, capture->control.remaining);
-        if (action == CONTROL_EXIT)
-            return ISO_EXIT;
-        if (action == CONTROL_SIGNAL_LOST)
-            return ISO_TIMEOUT;
-        if (action == CONTROL_BACK)
-            return ISO_CANCELLED;
+        if (action == CONTROL_EXIT) return ISO_EXIT;
+        if (action == CONTROL_SIGNAL_LOST) return ISO_TIMEOUT;
+        if (action == CONTROL_BACK) return ISO_CANCELLED;
         if (action == CONTROL_PHOTO) {
             capture->shutter_ms = elapsed;
             preview_shutter(&capture->preview);
         }
-        if (preview_photo_ready(&capture->preview))
-            return ISO_PHOTO_READY;
+        if (preview_photo_ready(&capture->preview)) return ISO_PHOTO_READY;
     }
-    if (age >= FRAME_TIMEOUT_SECONDS*1000)
-        return ISO_TIMEOUT;
+    if (age >= FRAME_TIMEOUT_SECONDS * 1000) return ISO_TIMEOUT;
     return ISO_RUNNING;
 }
 
@@ -567,11 +561,12 @@ static void stopping_capture(void *context, IsoStop reason, int failure)
 {
     Capture *capture = context;
     record_control_stop(&capture->record_control,
-                        (unsigned)ticks_to_millisecs(gettime()-capture->start));
+                        (unsigned)ticks_to_millisecs(gettime() - capture->start));
     atomic_store_explicit(&capture->worker_stop, true, memory_order_release);
     LWP_JoinThread(capture->worker, NULL);
-    draw_screen(SCREEN_WAITING, reason == ISO_PHOTO_READY ? rgb : NULL,
-                capture->mode->width, capture->mode->height, capture->video_mode ? "Stopping camera / saving video" : "Stopping camera");
+    draw_screen(SCREEN_WAITING, reason == ISO_PHOTO_READY ? rgb : NULL, capture->mode->width,
+                capture->mode->height,
+                capture->video_mode ? "Stopping camera / saving video" : "Stopping camera");
     report("Capture stop requested: %s.\n", stop_description(reason));
     if (reason == ISO_SUBMIT_FAILED || reason == ISO_COMPLETION_FAILED)
         report("USB failure result: %d\n", failure);
@@ -590,8 +585,8 @@ static void cancel_capture(void *context)
 static int submit_capture(void *context, IsoSlot *slot)
 {
     const Capture *capture = context;
-    return USB_ReadIsoMsgAsync(capture->handle, capture->alt->endpoint, ISO_PACKETS,
-                               slot->sizes, slot->data, iso_finished, slot);
+    return USB_ReadIsoMsgAsync(capture->handle, capture->alt->endpoint, ISO_PACKETS, slot->sizes,
+                               slot->data, iso_finished, slot);
 }
 
 static bool consume_capture(void *context, const IsoSlot *slot)
@@ -611,14 +606,13 @@ static bool consume_capture(void *context, const IsoSlot *slot)
         for (unsigned i = 0; i < ISO_PACKETS; ++i) {
             unsigned length = slot->sizes[i];
             unsigned bounded = length < alt->capacity ? length : alt->capacity;
-            sample_packet(&capture->first[i], slot->data, i, bounded,
-                          i * alt->capacity, capture->start);
+            sample_packet(&capture->first[i], slot->data, i, bounded, i * alt->capacity,
+                          capture->start);
             capture->first[i].length = length;
-            if (length > alt->capacity)
-                packed_valid = false;
+            if (length > alt->capacity) packed_valid = false;
             if (packed_valid) {
-                sample_packet(&capture->packed[i], slot->data, i, length,
-                              packed_offset, capture->start);
+                sample_packet(&capture->packed[i], slot->data, i, length, packed_offset,
+                              capture->start);
                 packed_offset += length;
             } else
                 capture->packed[i].offset = UINT32_MAX;
@@ -633,22 +627,21 @@ static bool consume_capture(void *context, const IsoSlot *slot)
         }
         unsigned offset = i * alt->capacity;
         const uint8_t *packet = slot->data + offset;
-        if (length < capture->min_length)
-            capture->min_length = length;
+        if (length < capture->min_length) capture->min_length = length;
         if (length > capture->max_length) {
             capture->max_length = length;
             sample_packet(&capture->largest, slot->data, i, length, offset, capture->start);
         }
         if (length >= 2) {
             if (!capture->first_payload.copied && packet[0] >= 2 && packet[0] < length)
-                sample_packet(&capture->first_payload, slot->data, i, length, offset, capture->start);
+                sample_packet(&capture->first_payload, slot->data, i, length, offset,
+                              capture->start);
             if (!capture->first_error.copied && (packet[1] & 0x40))
                 sample_packet(&capture->first_error, slot->data, i, length, offset, capture->start);
         }
         /* IOS retains requested strides; returned sizes are actual lengths. */
         if (uvc_packet(frame, packet, length)) {
-            if (!preview_offer(&capture->preview, frame->data, frame->size))
-                ++capture->skipped;
+            if (!preview_offer(&capture->preview, frame->data, frame->size)) ++capture->skipped;
         }
     }
     return false;
@@ -656,19 +649,23 @@ static bool consume_capture(void *context, const IsoSlot *slot)
 
 static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate *alt)
 {
-    Capture capture = {
-        .handle = handle, .mode = mode, .alt = alt, .min_length = ISO_MAX_PAYLOAD,
-        .video_mode = screen_info.video
-    };
+    Capture capture = {.handle = handle,
+                       .mode = mode,
+                       .alt = alt,
+                       .min_length = ISO_MAX_PAYLOAD,
+                       .video_mode = screen_info.video};
     uvc_frame_init(&capture.frame, frame_data, sizeof(frame_data));
     IsoQueue queue;
     iso_queue_init(&queue, iso_data, iso_sizes, alt->capacity);
-    const IsoHooks hooks = {
-        .submit = submit_capture, .consume = consume_capture, .poll = poll_capture,
-        .idle = idle_capture, .stopping = stopping_capture, .cancel = cancel_capture
-    };
-    report("Viewfinder with %u queued batches of %u slots. A captures/records, B stops, HOME exits.\n",
-           ISO_QUEUE_DEPTH, ISO_PACKETS);
+    const IsoHooks hooks = {.submit = submit_capture,
+                            .consume = consume_capture,
+                            .poll = poll_capture,
+                            .idle = idle_capture,
+                            .stopping = stopping_capture,
+                            .cancel = cancel_capture};
+    report(
+        "Viewfinder with %u queued batches of %u slots. A captures/records, B stops, HOME exits.\n",
+        ISO_QUEUE_DEPTH, ISO_PACKETS);
     preview_init(&capture.preview, preview_jpeg, sizeof(preview_jpeg));
     atomic_init(&capture.worker_stop, false);
     atomic_init(&capture.last_decoded_ms, 0);
@@ -679,45 +676,46 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
     draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height, "WAITING FOR FIRST FRAME");
     capture.start = gettime();
     if (LWP_CreateThread(&capture.worker, preview_worker, &capture, worker_stack,
-                         sizeof(worker_stack), 60) < 0) {
+                         sizeof(worker_stack), 60)
+        < 0) {
         report("Could not start preview worker.\n");
         return ISO_SUBMIT_FAILED;
     }
     IsoStop stop = iso_queue_run(&queue, &hooks, &capture);
     const UvcFrame *frame = &capture.frame;
     const UvcStats *stats = &frame->stats;
-    report("Capture ended: %s; elapsed %llu ms (including drain).\n",
-           stop_description(stop),
+    report("Capture ended: %s; elapsed %llu ms (including drain).\n", stop_description(stop),
            (unsigned long long)ticks_to_millisecs(gettime() - capture.start));
     report("Queue submitted %u, consumed %u, drained %u; max consume gap %llu us\n",
            queue.submitted, queue.consumed, queue.drained,
            (unsigned long long)ticks_to_microsecs(capture.max_batch_gap));
     for (unsigned i = 0; i < queue.drained; ++i)
         report("Completion drained after stop: %d\n", queue.drain_results[i]);
-    report("Batches %u, slots %u, bytes %u, length %u..%u\n", capture.batches,
-           stats->packets, stats->bytes, stats->packets ? capture.min_length : 0,
-           capture.max_length);
-    report("Empty %u, header-only %u, payload %u (%u bytes)\n",
-           stats->empty, stats->header_only, stats->payload_packets, stats->payload_bytes);
-    report("Bad headers %u, ERR %u, EOF %u, FID changes %u\n",
-           stats->bad_headers, stats->errors, stats->eof, stats->fid_changes);
-    report("Dropped %u: missing EOF %u, empty frames %u\n",
-           frame->dropped, stats->missing_eof, stats->empty_frames);
+    report("Batches %u, slots %u, bytes %u, length %u..%u\n", capture.batches, stats->packets,
+           stats->bytes, stats->packets ? capture.min_length : 0, capture.max_length);
+    report("Empty %u, header-only %u, payload %u (%u bytes)\n", stats->empty, stats->header_only,
+           stats->payload_packets, stats->payload_bytes);
+    report("Bad headers %u, ERR %u, EOF %u, FID changes %u\n", stats->bad_headers, stats->errors,
+           stats->eof, stats->fid_changes);
+    report("Dropped %u: missing EOF %u, empty frames %u\n", frame->dropped, stats->missing_eof,
+           stats->empty_frames);
     report("Invalid JPEG %u, overflow %u\n", stats->invalid_jpeg, stats->overflow);
     report("JPEG boundary reasons (overlap): short=%u missing_soi=%u missing_terminal_eoi=%u\n",
            stats->short_jpeg, stats->missing_soi, stats->missing_eoi);
     report("JPEG normalized zero padding: frames=%u bytes=%u (aligned, max 7 bytes)\n",
            stats->normalized_frames, stats->padding_bytes);
     report("JPEG accepted assembled size mod8 [0..7]: %u %u %u %u %u %u %u %u\n",
-           stats->accepted_mod8[0], stats->accepted_mod8[1], stats->accepted_mod8[2], stats->accepted_mod8[3],
-           stats->accepted_mod8[4], stats->accepted_mod8[5], stats->accepted_mod8[6], stats->accepted_mod8[7]);
-    report("JPEG rejected size mod8 [0..7]: %u %u %u %u %u %u %u %u\n",
-           stats->rejected_mod8[0], stats->rejected_mod8[1], stats->rejected_mod8[2], stats->rejected_mod8[3],
-           stats->rejected_mod8[4], stats->rejected_mod8[5], stats->rejected_mod8[6], stats->rejected_mod8[7]);
-    report("JPEG candidates %u, decode rejected %u, oversized slots %u\n",
-           stats->complete, capture.rejected, capture.oversized);
-    report("Unfinished frame: %u bytes, discard=%u, ended=%u\n",
-           (unsigned)frame->size, frame->discard, frame->ended);
+           stats->accepted_mod8[0], stats->accepted_mod8[1], stats->accepted_mod8[2],
+           stats->accepted_mod8[3], stats->accepted_mod8[4], stats->accepted_mod8[5],
+           stats->accepted_mod8[6], stats->accepted_mod8[7]);
+    report("JPEG rejected size mod8 [0..7]: %u %u %u %u %u %u %u %u\n", stats->rejected_mod8[0],
+           stats->rejected_mod8[1], stats->rejected_mod8[2], stats->rejected_mod8[3],
+           stats->rejected_mod8[4], stats->rejected_mod8[5], stats->rejected_mod8[6],
+           stats->rejected_mod8[7]);
+    report("JPEG candidates %u, decode rejected %u, oversized slots %u\n", stats->complete,
+           capture.rejected, capture.oversized);
+    report("Unfinished frame: %u bytes, discard=%u, ended=%u\n", (unsigned)frame->size,
+           frame->discard, frame->ended);
     if (stats->header_only && !stats->payload_bytes && !stats->bad_headers)
         report("Only UVC headers received; no image payload reached the decoder.\n");
     /* All queued transfers have returned ownership before diagnostic I/O. */
@@ -726,15 +724,17 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
                frame->boundary_samples, UVC_BOUNDARY_SAMPLES);
         for (unsigned i = 0; i < frame->boundary_samples; ++i) {
             const UvcBoundarySample *sample = &frame->boundary[i];
-            report("Rejected JPEG %u: size=%lu mod8=%u reasons=%u EOF_header=%u flags=%02x raw_EOI_tail_gap=%d\n",
-                   i, (unsigned long)sample->size, (unsigned)(sample->size & 7),
-                   sample->reasons, sample->header_length, sample->flags, sample->eoi_distance);
+            report(
+                "Rejected JPEG %u: size=%lu mod8=%u reasons=%u EOF_header=%u flags=%02x raw_EOI_tail_gap=%d\n",
+                i, (unsigned long)sample->size, (unsigned)(sample->size & 7), sample->reasons,
+                sample->header_length, sample->flags, sample->eoi_distance);
             log_text("Rejected JPEG prefix (up to 8 bytes):");
             log_hex(sample->head, sample->head_length);
             log_text("Rejected JPEG suffix (up to 16 bytes):");
             log_hex(sample->tail, sample->tail_length);
         }
-        log_text("raw_EOI_tail_gap is a byte-pair hint in the final 16 bytes, -1 absent; validation is unchanged.");
+        log_text(
+            "raw_EOI_tail_gap is a byte-pair hint in the final 16 bytes, -1 absent; validation is unchanged.");
         report("First batch completion: %d; packet samples in SD log.\n", capture.first_result);
         for (unsigned i = 0; i < ISO_PACKETS; ++i) {
             log_sample("Requested-stride sample", &capture.first[i]);
@@ -743,29 +743,29 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
             else
                 log_text("Packed comparison unavailable after invalid returned size.\n");
         }
-        if (capture.largest.copied)
-            log_sample("Largest packet", &capture.largest);
+        if (capture.largest.copied) log_sample("Largest packet", &capture.largest);
         if (capture.first_payload.copied)
             log_sample("First apparent payload", &capture.first_payload);
-        if (capture.first_error.copied)
-            log_sample("First apparent ERR flag", &capture.first_error);
+        if (capture.first_error.copied) log_sample("First apparent ERR flag", &capture.first_error);
         fflush(log_file);
     }
     report("Preview decoded %u, skipped while busy %u.\n", capture.decoded, capture.skipped);
-    report("Preview displayed %u; first decode +%u ms; longest decode %llu us\n",
-           capture.displayed, capture.first_decoded_ms,
+    report("Preview displayed %u; first decode +%u ms; longest decode %llu us\n", capture.displayed,
+           capture.first_decoded_ms,
            (unsigned long long)ticks_to_microsecs(capture.max_decode_time));
     if (atomic_load(&capture.preview.shutter))
         report("Shutter pressed at viewfinder +%u ms\n", capture.shutter_ms);
     if (capture.video_mode) {
         report("Longest video create/write %llu us; busy preview frames skipped %u\n",
-               (unsigned long long)ticks_to_microsecs(capture.max_video_write_time), capture.skipped);
+               (unsigned long long)ticks_to_microsecs(capture.max_video_write_time),
+               capture.skipped);
         report("Video frames %u, bytes %u, duration %u ms, saved=%u, failed=%u, limit=%u\n",
-               recording.avi.frames, recording.avi.bytes, recording.duration_ms,
-               recording.saved, recording.failed, recording.limited);
+               recording.avi.frames, recording.avi.bytes, recording.duration_ms, recording.saved,
+               recording.failed, recording.limited);
         if (recording.saved)
-            report("Video saved: %s; sampled average rate %.2f fps (not a camera rate guarantee).\n",
-                   recording.path, recording.avi.frames*1000.0/recording.duration_ms);
+            report(
+                "Video saved: %s; sampled average rate %.2f fps (not a camera rate guarantee).\n",
+                recording.path, recording.avi.frames * 1000.0 / recording.duration_ms);
         else if (recording.failed)
             report("Video SD creation/write failed. No completed clip.\n");
     }
@@ -774,8 +774,7 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
 
 static bool save_photo(unsigned width, unsigned height, char path[80])
 {
-    if (!mounted || !ensure_directory("sd:/DCIM") ||
-        !ensure_directory("sd:/DCIM/100WC04")) {
+    if (!mounted || !ensure_directory("sd:/DCIM") || !ensure_directory("sd:/DCIM/100WC04")) {
         report("SD photo directory unavailable.\n");
         return false;
     }
@@ -785,8 +784,7 @@ static bool save_photo(unsigned width, unsigned height, char path[80])
         return false;
     }
     bool ok = storage_finish(file, path, photo_encode(file, rgb, width, height));
-    if (!ok)
-        report("JPEG write failed; incomplete-file cleanup attempted.\n");
+    if (!ok) report("JPEG write failed; incomplete-file cleanup attempted.\n");
     return ok;
 }
 
@@ -798,8 +796,7 @@ int main(void)
     video = VIDEO_GetPreferredMode(NULL);
     xfb[0] = SYS_AllocateFramebuffer(video);
     xfb[1] = SYS_AllocateFramebuffer(video);
-    if (!xfb[0] || !xfb[1])
-        return 1;
+    if (!xfb[0] || !xfb[1]) return 1;
     widescreen = CONF_GetAspectRatio() == CONF_ASPECT_16_9;
     VIDEO_Configure(video);
     VIDEO_SetBlack(FALSE);
@@ -813,7 +810,8 @@ int main(void)
         log_file = fopen("sd:/wc04-camera/session.log", "a");
     report("\nWiiCam 0.1.0 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
-    report("0.3.4 photo/video capture verified on 0c45:6366 at both sizes; WiiCam 0.1.0 Panel UI awaits hardware testing.\n");
+    report(
+        "0.3.4 photo/video capture verified on 0c45:6366 at both sizes; WiiCam 0.1.0 Panel UI awaits hardware testing.\n");
     bool usb_ready = false;
     if (IOS_GetVersion() == 58)
         usb_ready = buffers_ready && USB_Initialize() >= 0;
@@ -821,8 +819,10 @@ int main(void)
         report("Launch under IOS58. This app does not install/reload IOS.\n");
     unsigned width = 320, height = 240;
     char status[80];
-    snprintf(status, sizeof(status), "%s", !usb_ready ? "Camera needs IOS58 and USB" :
-             mounted ? "Open viewfinder to start the camera." : "No SD - preview only");
+    snprintf(status, sizeof(status), "%s",
+             !usb_ready ? "Camera needs IOS58 and USB"
+             : mounted  ? "Open viewfinder to start the camera."
+                        : "No SD - preview only");
     bool menu = true, open_live = false;
     ScreenPage idle_page = SCREEN_MENU;
     while (!exit_requested) {
@@ -831,8 +831,7 @@ int main(void)
             menu = false;
         }
         uint32_t down = buttons();
-        if (exit_requested)
-            break;
+        if (exit_requested) break;
         if (idle_page == SCREEN_NO_SIGNAL && (down & WPAD_BUTTON_B)) {
             idle_page = SCREEN_MENU;
             snprintf(status, sizeof(status), "Open viewfinder to start the camera.");
@@ -844,13 +843,15 @@ int main(void)
             menu = true;
         }
         if (idle_page == SCREEN_MENU && (down & (WPAD_BUTTON_LEFT | WPAD_BUTTON_RIGHT))) {
-            screen_info.timer = capture_timer_next(screen_info.timer, down & WPAD_BUTTON_LEFT ? -1 : 1);
+            screen_info.timer =
+                capture_timer_next(screen_info.timer, down & WPAD_BUTTON_LEFT ? -1 : 1);
             menu = true;
         }
         if (idle_page == SCREEN_MENU && (down & WPAD_BUTTON_1)) {
             width = width == 320 ? 640 : 320;
             height = width == 320 ? 240 : 480;
-            snprintf(status, sizeof(status), "%ux%u selected - 2 refreshes camera source", width, height);
+            snprintf(status, sizeof(status), "%ux%u selected - 2 refreshes camera source", width,
+                     height);
             menu = true;
         }
         if (usb_ready && (open_live || (down & (WPAD_BUTTON_A | WPAD_BUTTON_B | WPAD_BUTTON_2)))) {
@@ -871,19 +872,21 @@ int main(void)
             if (find_camera(&handle, width, height, &mode)) {
                 UvcAlternate alt;
                 IsoStop result = ISO_SUBMIT_FAILED;
-                if (negotiate(handle, &mode, &alt))
-                    result = receive_photo(handle, &mode, &alt);
+                if (negotiate(handle, &mode, &alt)) result = receive_photo(handle, &mode, &alt);
                 s32 stopped = WC04_SetAlternate(handle, 0);
                 report("Stop streaming: %ld\n", (long)stopped);
-                snprintf(status, sizeof(status), "%s", result == ISO_CANCELLED ?
-                         "Open viewfinder to start the camera." : result == ISO_TIMEOUT ?
-                         "No frames - A retries, B menu" : "Camera stopped - A retries, B menu");
+                snprintf(status, sizeof(status), "%s",
+                         result == ISO_CANCELLED ? "Open viewfinder to start the camera."
+                         : result == ISO_TIMEOUT ? "No frames - A retries, B menu"
+                                                 : "Camera stopped - A retries, B menu");
                 USB_CloseDevice(&handle);
-                if (result == ISO_CANCELLED || result == ISO_RECORD_STOPPED || result == ISO_PHOTO_READY)
+                if (result == ISO_CANCELLED || result == ISO_RECORD_STOPPED
+                    || result == ISO_PHOTO_READY)
                     idle_page = SCREEN_MENU;
                 if (screen_info.video) {
                     if (recording.saved)
-                        snprintf(status, sizeof(status), "Saved %s", strrchr(recording.path, '/')+1);
+                        snprintf(status, sizeof(status), "Saved %s",
+                                 strrchr(recording.path, '/') + 1);
                     else if (recording.failed)
                         snprintf(status, sizeof(status), "Video not saved - check SD and log");
                     else if (result == ISO_RECORD_STOPPED)
@@ -914,12 +917,9 @@ int main(void)
         }
         VIDEO_WaitVSync();
     }
-    if (usb_ready)
-        USB_Deinitialize();
-    if (log_file)
-        fclose(log_file);
-    if (mounted)
-        fatUnmount("sd:");
+    if (usb_ready) USB_Deinitialize();
+    if (log_file) fclose(log_file);
+    if (mounted) fatUnmount("sd:");
     WPAD_Shutdown();
     return 0;
 }

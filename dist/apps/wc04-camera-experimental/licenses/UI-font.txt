@@ -1,6 +1,0 @@
-PRIVATE LOCAL TEST ONLY
-Font: FOT-RodinNTLG Pro DB
-Source font SHA-256: 2848d0d5d1b6452f201e50ee93f8356b6b91fb9305522a4481464ff80c3b1c1a
-This DOL embeds rasterized glyphs from the selected local font.
-The full font file is not included. Redistribution rights are not established.
-Do not publish this binary without resolving font and artwork permissions.

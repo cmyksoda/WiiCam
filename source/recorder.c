@@ -7,10 +7,10 @@ void recorder_init(Recorder *r)
     *r = (Recorder){0};
 }
 
-bool recorder_start(Recorder *r, const char *directory, unsigned width, unsigned height, uint64_t now)
+bool recorder_start(Recorder *r, const char *directory, unsigned width, unsigned height,
+                    uint64_t now)
 {
-    if (r->active)
-        return false;
+    if (r->active) return false;
     recorder_init(r);
     FILE *file = storage_create(directory, "VID", "AVI", r->path, sizeof(r->path));
     if (!file) {
@@ -30,9 +30,8 @@ bool recorder_start(Recorder *r, const char *directory, unsigned width, unsigned
 
 bool recorder_frame(Recorder *r, const uint8_t *jpeg, size_t length, uint64_t now)
 {
-    if (!r->active || r->failed || r->limited)
-        return false;
-    if (now-r->started >= AVI_MAX_MS || !avi_has_space(&r->avi, length)) {
+    if (!r->active || r->failed || r->limited) return false;
+    if (now - r->started >= AVI_MAX_MS || !avi_has_space(&r->avi, length)) {
         r->limited = true;
         return false;
     }
@@ -46,9 +45,8 @@ bool recorder_frame(Recorder *r, const uint8_t *jpeg, size_t length, uint64_t no
 
 bool recorder_stop(Recorder *r, uint64_t now)
 {
-    if (!r->active)
-        return false;
-    uint64_t duration = now > r->started ? now-r->started : 1;
+    if (!r->active) return false;
+    uint64_t duration = now > r->started ? now - r->started : 1;
     r->duration_ms = duration > AVI_MAX_MS ? AVI_MAX_MS : (unsigned)duration;
     bool finished = !r->failed && avi_finish(&r->avi, r->duration_ms);
     r->saved = storage_finish(r->avi.file, r->path, finished);

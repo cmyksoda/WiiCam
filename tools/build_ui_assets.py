@@ -30,7 +30,7 @@ def array(name, values):
     lines.append('};')
 
 pixels = bytearray()
-for size in (12, 15, 18, 20, 22, 25, 28, 48):
+for size in (12, 15, 18, 20, 22, 25, 28):
     font = ImageFont.truetype(str(font_path), size)
     entries = []
     for c in range(32, 127):
@@ -49,10 +49,54 @@ for size in (12, 15, 18, 20, 22, 25, 28, 48):
         pixels.extend(mask.tobytes())
     lines.append(f'static const UiGlyph ui_font_{size}[] = {{\n' + ',\n'.join(entries) + '\n};')
 array('ui_font_pixels', pixels)
-home = Image.open(ROOT / 'assets/wii-home-glyph-mask.png').convert('L')
-home.thumbnail((18, 17), Image.Resampling.LANCZOS)
-lines.append(f'#define UI_HOME_WIDTH {home.width}\n#define UI_HOME_HEIGHT {home.height}')
-array('ui_home', home.tobytes())
+# Small circular prompts use dedicated masks: their visible pixels, rather than
+# font bearings or baseline, determine placement. Supersampling preserves half-
+# pixel positions and comfortable padding in the unchanged 26px circles.
+badge_scale, badge_size, badge_font_size = 4, 27, 14
+badge_font = ImageFont.truetype(str(font_path), badge_font_size*badge_scale)
+badges = bytearray()
+badge_metrics = []
+# Optical offsets follow visible-ink centering without moving circle centers.
+optical_offsets = {'A': (0, -1), 'B': (0, 0), '+': (0, 0),
+                   '1': (-.5, 0), '2': (.5, 0), 'HOME': (.5, -1)}
+for label in ('A', 'B', '+', '1', '2', 'HOME'):
+    if label == 'HOME':
+        mask = Image.open(ROOT / 'assets/wii-home-glyph-mask.png').convert('L')
+        mask = mask.resize((12*badge_scale, round(12*badge_scale*mask.height/mask.width)),
+                           Image.Resampling.LANCZOS)
+    else:
+        a, b, c, d = badge_font.getbbox(label, anchor='ls')
+        mask = Image.new('L', (c-a, d-b))
+        ImageDraw.Draw(mask).text((-a, -b), label, font=badge_font, anchor='ls', fill=255)
+    visible = mask.point(lambda value: 255 if value >= 32 else 0).getbbox()
+    mask = mask.crop(visible)
+    badge = Image.new('L', (badge_size*badge_scale, badge_size*badge_scale))
+    offset_x, offset_y = optical_offsets[label]
+    badge.paste(mask, ((badge.width-mask.width)//2 + round(offset_x*badge_scale),
+                      (badge.height-mask.height)//2 + round(offset_y*badge_scale)))
+    badge = badge.resize((badge_size, badge_size), Image.Resampling.LANCZOS)
+    badges.extend(badge.tobytes())
+    badge_metrics.append({'label': label, 'optical_offset': [offset_x, offset_y], 'visible_bounds': badge.point(
+        lambda value: 255 if value >= 32 else 0).getbbox()})
+lines.append(f'#define UI_BADGE_SIZE {badge_size}')
+array('ui_badges', badges)
+(ROOT / 'build/ui-badges.json').write_text(json.dumps({
+    'font_size': badge_font_size, 'home_max_size': 12,
+    'canvas_size': badge_size, 'badges': badge_metrics
+}, indent=2) + '\n')
+# Center timer numerals by visible ink in the 56x48 overlay.
+countdowns = bytearray()
+count_font = ImageFont.truetype(str(font_path), 28*2)
+for number in range(1, 11):
+    value = str(number)
+    a, b, c, d = count_font.getbbox(value, anchor='ls')
+    mask = Image.new('L', (c-a, d-b))
+    ImageDraw.Draw(mask).text((-a, -b), value, font=count_font, anchor='ls', fill=255)
+    mask = mask.crop(mask.getbbox())
+    overlay = Image.new('L', (112, 96))
+    overlay.paste(mask, (round((112-mask.width)/2), round((96-mask.height)/2)))
+    countdowns.extend(overlay.resize((56, 48), Image.Resampling.LANCZOS).tobytes())
+array('ui_countdown_ink', countdowns)
 bars = Image.open(ROOT / 'assets/color-bars.png').convert('RGB').resize((360, 270), Image.Resampling.NEAREST)
 array('ui_bars', bars.tobytes())
 output.write_text('\n'.join(lines) + '\n')

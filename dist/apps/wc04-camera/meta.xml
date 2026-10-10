@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<app version="1">
-  <name>WC04 Camera (Pearl local test)</name>
-  <coder>cmyksoda</coder>
-  <version>0.3.0-pearl-local-test</version>
-  <short_description>Photos, timers, silent AVI test</short_description>
-  <long_description>PRIVATE LOCAL TEST: font redistribution rights unverified. WC04 (057e:030a), IOS58 and writable SD required to save. A opens live view; 1 changes size; 2 checks camera; + selects Photo/Video; left/right selects Off/3/5/10 second timer. Photo: A captures, B cancels countdown or returns to menu. Video: A starts/stops silent sampled MJPEG AVI, max 60 seconds/128 MiB. HOME finalizes and exits. Host-tested and compiled, new UI/timers/video await physical Wii testing. If USB stopping waits, unplug camera. Temporary icon: Giuseppe Ramos / Vecteezy.com; see included licenses.</long_description>
-</app>

@@ -10,13 +10,12 @@ unsigned capture_timer_next(unsigned delay, int direction)
 {
     const unsigned timers[] = {0, 3, 5, 10};
     for (unsigned i = 0; i < 4; ++i)
-        if (timers[i] == delay)
-            return timers[(i + (direction < 0 ? 3 : 1)) % 4];
+        if (timers[i] == delay) return timers[(i + (direction < 0 ? 3 : 1)) % 4];
     return 0;
 }
 
-CaptureAction capture_control_update(CaptureControl *c, uint64_t now,
-    bool a, bool b, bool exit, bool signal, bool storage)
+CaptureAction capture_control_update(CaptureControl *c, uint64_t now, bool a, bool b, bool exit,
+                                     bool signal, bool storage)
 {
     if (exit) {
         c->counting = false;
@@ -24,8 +23,7 @@ CaptureAction capture_control_update(CaptureControl *c, uint64_t now,
         return CONTROL_EXIT;
     }
     if (b) {
-        if (!c->counting)
-            return CONTROL_BACK;
+        if (!c->counting) return CONTROL_BACK;
         c->counting = false;
         c->remaining = 0;
         return CONTROL_NONE;
@@ -39,8 +37,7 @@ CaptureAction capture_control_update(CaptureControl *c, uint64_t now,
         }
         return CONTROL_NONE;
     }
-    if (c->shutter)
-        return CONTROL_NONE;
+    if (c->shutter) return CONTROL_NONE;
     if (a && !c->counting) {
         c->counting = true;
         c->deadline = now + (uint64_t)c->delay * 1000;

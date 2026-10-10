@@ -5,7 +5,7 @@
 #include "iso_queue.h"
 #include <string.h>
 
-_Static_assert(ISO_PACKETS * ISO_MAX_PAYLOAD <= UINT16_MAX,
+_Static_assert(ISO_PACKETS *ISO_MAX_PAYLOAD <= UINT16_MAX,
                "libogc uses a 16-bit aggregate transfer length");
 _Static_assert(ISO_DATA_BYTES % 32 == 0 && ISO_PACKETS * sizeof(uint16_t) % 32 == 0,
                "every IOS data and size bank must remain cache-line aligned");
@@ -58,14 +58,12 @@ IsoStop iso_queue_run(IsoQueue *queue, const IsoHooks *hooks, void *context)
         stop = ISO_SUBMIT_FAILED;
     }
     for (unsigned i = 0; stop == ISO_RUNNING && i < ISO_QUEUE_DEPTH; ++i) {
-        if (!submit(queue, &queue->slots[i], hooks, context))
-            stop = ISO_SUBMIT_FAILED;
+        if (!submit(queue, &queue->slots[i], hooks, context)) stop = ISO_SUBMIT_FAILED;
     }
     unsigned next = 0;
     while (stop == ISO_RUNNING) {
         stop = hooks->poll(context);
-        if (stop != ISO_RUNNING)
-            break;
+        if (stop != ISO_RUNNING) break;
         IsoSlot *slot = &queue->slots[next];
         if (!completed(slot)) {
             hooks->idle(context);
@@ -84,20 +82,17 @@ IsoStop iso_queue_run(IsoQueue *queue, const IsoHooks *hooks, void *context)
             break;
         }
         stop = hooks->poll(context);
-        if (stop == ISO_RUNNING && !submit(queue, slot, hooks, context))
-            stop = ISO_SUBMIT_FAILED;
+        if (stop == ISO_RUNNING && !submit(queue, slot, hooks, context)) stop = ISO_SUBMIT_FAILED;
         next = (next + 1) % ISO_QUEUE_DEPTH;
     }
     hooks->stopping(context, stop, queue->failure);
     bool outstanding = false;
     for (unsigned i = 0; i < ISO_QUEUE_DEPTH; ++i)
         outstanding |= queue->slots[i].pending && !completed(&queue->slots[i]);
-    if (outstanding)
-        hooks->cancel(context);
+    if (outstanding) hooks->cancel(context);
     for (unsigned i = 0; i < ISO_QUEUE_DEPTH; ++i) {
         IsoSlot *slot = &queue->slots[i];
-        if (!slot->pending)
-            continue;
+        if (!slot->pending) continue;
         /* Cancellation does not return ownership; every callback must arrive. */
         while (!completed(slot)) {
             hooks->poll(context);

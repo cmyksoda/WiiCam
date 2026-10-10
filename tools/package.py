@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 cmyksoda
-"""Package only the WiiCam runtime, installation note, and licenses."""
+"""Package only the WiiCam runtime and its applicable notices."""
 
 import argparse
 import json
@@ -17,10 +17,7 @@ FILES = [
     "boot.dol",
     "meta.xml",
     "icon.png",
-    "INSTALL.txt",
-    "licenses/ASSET-PROVENANCE.txt",
     "licenses/HOME-PROVENANCE.json",
-    "licenses/Vecteezy-License-Information.pdf",
     "licenses/UI-font.txt",
     "licenses/WC04-GPLv3.txt",
     "licenses/libogc.txt",
@@ -63,7 +60,7 @@ def main():
     if not args.local_test:
         parser.error('font-derived asset redistribution is unverified; only --local-test is supported')
     font = json.loads((ROOT / 'build/ui-font.json').read_text())
-    for name in ('ASSET-PROVENANCE.txt', 'HOME-PROVENANCE.json', 'Vecteezy-License-Information.pdf'):
+    for name in ('HOME-PROVENANCE.json',):
         shutil.copyfile(ROOT / 'assets' / name, APP / 'licenses' / name)
     (APP / 'licenses/UI-font.txt').write_text(
         'PRIVATE LOCAL TEST ONLY\nFont: ' + ' '.join(font['name']) +
@@ -74,6 +71,8 @@ def main():
     data = (APP / "boot.dol").read_bytes()
     validate_dol(data)
     (APP / "licenses/WC04-GPLv3.txt").write_bytes((ROOT / "LICENSE").read_bytes())
+    # Preserve the exact metadata bytes in the package.
+    metadata = (APP / "meta.xml").read_bytes()
     archive = ROOT / "dist/WiiCam-0.1.0-local-test.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
         for name in FILES:
@@ -82,6 +81,7 @@ def main():
         assert package.testzip() is None
         assert package.namelist() == [f"apps/wiicam/{name}" for name in FILES]
         assert package.read("apps/wiicam/boot.dol") == data
+        assert package.read("apps/wiicam/meta.xml") == metadata
     print(f"DOL: {len(data)} bytes; SHA-256 {sha256(data).hexdigest()}")
     print(f"ZIP: {archive.relative_to(ROOT)}; SHA-256 {sha256(archive.read_bytes()).hexdigest()}")
 

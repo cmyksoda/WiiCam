@@ -6,8 +6,13 @@
 #include <stddef.h>
 
 typedef enum {
-    REFRESH_BUSY, REFRESH_CANCELLING, REFRESH_FOUND, REFRESH_MISSING, REFRESH_CANCELLED
+    REFRESH_BUSY,
+    REFRESH_CANCELLING,
+    REFRESH_FOUND,
+    REFRESH_MISSING,
+    REFRESH_CANCELLED
 } RefreshResult;
+
 typedef struct {
     atomic_bool complete;
     bool found, cancelled;
@@ -18,6 +23,6 @@ void refresh_control_init(RefreshControl *control);
 void refresh_control_complete(RefreshControl *control, bool found);
 /* UI thread owns cancellation; a late success cannot undo it. */
 RefreshResult refresh_control_poll(RefreshControl *control, bool cancel);
-void refresh_status(char *text, size_t capacity, RefreshResult result,
-                    unsigned width, unsigned height);
+void refresh_status(char *text, size_t capacity, RefreshResult result, unsigned width,
+                    unsigned height);
 #endif

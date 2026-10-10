@@ -2,7 +2,8 @@
 #include "capture_control.h"
 #include <assert.h>
 #include <stdio.h>
-#define STEP(t,a,b,e,s,sd) capture_control_update(&c,t,a,b,e,s,sd)
+#define STEP(t, a, b, e, s, sd) capture_control_update(&c, t, a, b, e, s, sd)
+
 int main(void)
 {
     CaptureControl c;
@@ -16,41 +17,43 @@ int main(void)
         for (unsigned n = 0; n < 4; ++n) {
             unsigned delay = delays[n];
             capture_control_init(&c, delay);
-            assert(STEP(100,true,false,false,true,true) == (delay ? CONTROL_NONE : CONTROL_PHOTO));
+            assert(STEP(100, true, false, false, true, true)
+                   == (delay ? CONTROL_NONE : CONTROL_PHOTO));
             if (delay) {
                 assert(c.remaining == delay);
-                assert(STEP(100+delay*1000-1,true,false,false,true,true) == CONTROL_NONE);
+                assert(STEP(100 + delay * 1000 - 1, true, false, false, true, true)
+                       == CONTROL_NONE);
                 assert(c.remaining == 1);
-                assert(STEP(100+delay*1000,false,false,false,true,true) == CONTROL_PHOTO);
+                assert(STEP(100 + delay * 1000, false, false, false, true, true) == CONTROL_PHOTO);
             }
-            assert(STEP(20000,true,false,false,true,true) == CONTROL_NONE);
+            assert(STEP(20000, true, false, false, true, true) == CONTROL_NONE);
         }
     }
     capture_control_init(&c, 3);
-    STEP(0,true,false,false,true,true);
-    assert(STEP(3000,false,true,false,true,true) == CONTROL_NONE);
+    STEP(0, true, false, false, true, true);
+    assert(STEP(3000, false, true, false, true, true) == CONTROL_NONE);
     assert(!c.counting && !c.shutter);
-    assert(STEP(4000,false,false,false,true,true) == CONTROL_NONE);
-    assert(STEP(4001,false,true,false,true,true) == CONTROL_BACK);
-    STEP(5000,true,false,false,true,true);
-    STEP(6000,false,false,false,false,true);
+    assert(STEP(4000, false, false, false, true, true) == CONTROL_NONE);
+    assert(STEP(4001, false, true, false, true, true) == CONTROL_BACK);
+    STEP(5000, true, false, false, true, true);
+    STEP(6000, false, false, false, false, true);
     assert(!c.counting);
-    assert(STEP(9000,false,false,false,true,true) == CONTROL_NONE);
-    STEP(10000,true,false,false,true,true);
-    STEP(11000,false,false,false,true,false);
+    assert(STEP(9000, false, false, false, true, true) == CONTROL_NONE);
+    STEP(10000, true, false, false, true, true);
+    STEP(11000, false, false, false, true, false);
     assert(!c.counting);
-    assert(STEP(12000,true,false,true,true,true) == CONTROL_EXIT);
+    assert(STEP(12000, true, false, true, true, true) == CONTROL_EXIT);
     capture_control_init(&c, 0);
-    assert(STEP(0,true,false,false,false,true) == CONTROL_NONE);
-    assert(STEP(1,true,false,false,true,false) == CONTROL_NONE);
+    assert(STEP(0, true, false, false, false, true) == CONTROL_NONE);
+    assert(STEP(1, true, false, false, true, false) == CONTROL_NONE);
     capture_control_init(&c, 3);
-    STEP(100,true,false,false,true,true);
-    STEP(500,false,true,false,true,true);
-    STEP(700,true,false,false,true,true);
+    STEP(100, true, false, false, true, true);
+    STEP(500, false, true, false, true, true);
+    STEP(700, true, false, false, true, true);
     assert(c.deadline == 3700);
-    assert(STEP(3100,false,false,false,true,true) == CONTROL_NONE);
-    assert(STEP(3700,false,false,false,true,true) == CONTROL_PHOTO);
-    assert(STEP(4700,false,false,false,false,true) == CONTROL_SIGNAL_LOST);
+    assert(STEP(3100, false, false, false, true, true) == CONTROL_NONE);
+    assert(STEP(3700, false, false, false, true, true) == CONTROL_PHOTO);
+    assert(STEP(4700, false, false, false, false, true) == CONTROL_SIGNAL_LOST);
     assert(!c.shutter && !c.counting);
 
     RecordControl record;
@@ -80,5 +83,6 @@ int main(void)
     assert(record_control_request(&record) && record_control_begin(&record));
     assert(record_control_started(&record, false, 2000));
     assert(atomic_load(&record.state) == RECORD_FAILED);
-    puts("PASS: immediate/repeated capture, 3/5/10 s, cancel/restart, pending shutter loss, record start/stop interleavings, latched duration");
+    puts(
+        "PASS: immediate/repeated capture, 3/5/10 s, cancel/restart, pending shutter loss, record start/stop interleavings, latched duration");
 }

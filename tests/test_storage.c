@@ -6,13 +6,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
 static ssize_t write_failed(void *p, const char *data, size_t size)
 {
-    (void)p; (void)data; (void)size;
+    (void)p;
+    (void)data;
+    (void)size;
     errno = ENOSPC;
     return -1;
 }
-static int close_failed(void *p) { (void)p; errno=EIO; return -1; }
+
+static int close_failed(void *p)
+{
+    (void)p;
+    errno = EIO;
+    return -1;
+}
+
 int main(void)
 {
     char directory[] = "build/storage-test-XXXXXX", paths[10][120];
@@ -33,11 +43,11 @@ int main(void)
     assert(errno == ENAMETOOLONG);
     f = storage_create(directory, "VID", "AVI", path, sizeof(path));
     assert(f && fclose(f) == 0);
-    f = fopencookie(NULL, "w", (cookie_io_functions_t){.close=close_failed});
+    f = fopencookie(NULL, "w", (cookie_io_functions_t){.close = close_failed});
     assert(f && !storage_finish(f, path, true) && access(path, F_OK) != 0);
     f = storage_create(directory, "VID", "AVI", path, sizeof(path));
     assert(f && fclose(f) == 0);
-    f = fopencookie(NULL, "w", (cookie_io_functions_t){.write=write_failed});
+    f = fopencookie(NULL, "w", (cookie_io_functions_t){.write = write_failed});
     assert(f && fputs("buffered SD write", f) >= 0);
     assert(!storage_finish(f, path, true) && access(path, F_OK) != 0);
     for (unsigned n = 0; n < 10; ++n) {
@@ -48,5 +58,6 @@ int main(void)
         unlink(paths[n]);
     }
     rmdir(directory);
-    puts("PASS: repeated exclusive captures, existing file preservation, creation/encode/flush/close errors");
+    puts(
+        "PASS: repeated exclusive captures, existing file preservation, creation/encode/flush/close errors");
 }

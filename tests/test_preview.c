@@ -61,7 +61,8 @@ int main(void)
     for (unsigned i = 0; i < 2000; ++i) {
         memset(input, (uint8_t)i, sizeof(input));
         if (i == 1999) preview_shutter(&preview);
-        while (!preview_offer(&preview, input, sizeof(input))) sched_yield();
+        while (!preview_offer(&preview, input, sizeof(input)))
+            sched_yield();
     }
     assert(pthread_join(thread, NULL) == 0);
     assert(preview_photo_ready(&preview));

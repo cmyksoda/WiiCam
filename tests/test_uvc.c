@@ -8,19 +8,13 @@
 #include <string.h>
 
 static const uint8_t fixture[] = {
-    9, 2, 119, 0, 2, 1, 0, 0x80, 250,
-    9, 4, 0, 0, 0, 14, 1, 0, 0,
-    13, 0x24, 1, 0, 1, 13, 0, 0xc0, 0xe1, 0xe4, 0, 1, 1,
-    9, 4, 1, 0, 0, 14, 2, 0, 0,
-    14, 0x24, 1, 1, 63, 0, 0x81, 0, 1, 0, 0, 0, 1, 0,
-    11, 0x24, 6, 1, 1, 1, 1, 0, 0, 0, 0,
-    38, 0x24, 7, 2, 0, 0x40, 1, 0xf0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0xc2, 1, 0, 0x15, 0x16, 5, 0, 0,
-    0x15, 0x16, 5, 0, 0x76, 0x96, 0x98, 0, 0x15, 0x16, 5, 0,
-    9, 4, 1, 1, 1, 14, 2, 0, 0,
-    7, 5, 0x81, 5, 0x60, 0x0a, 1
-};
+    9, 2,    119,  0,  2,    1, 0,    0x80, 250,  9,    4,    0,    0,    0, 14,   1,    0,
+    0, 13,   0x24, 1,  0,    1, 13,   0,    0xc0, 0xe1, 0xe4, 0,    1,    1, 9,    4,    1,
+    0, 0,    14,   2,  0,    0, 14,   0x24, 1,    1,    63,   0,    0x81, 0, 1,    0,    0,
+    0, 1,    0,    11, 0x24, 6, 1,    1,    1,    1,    0,    0,    0,    0, 38,   0x24, 7,
+    2, 0,    0x40, 1,  0xf0, 0, 0,    0,    0,    0,    0,    0,    0,    0, 0,    0xc2, 1,
+    0, 0x15, 0x16, 5,  0,    0, 0x15, 0x16, 5,    0,    0x76, 0x96, 0x98, 0, 0x15, 0x16, 5,
+    0, 9,    4,    1,  1,    1, 14,   2,    0,    0,    7,    5,    0x81, 5, 0x60, 0x0a, 1};
 
 static void test_descriptors(void)
 {
@@ -102,9 +96,7 @@ static void test_frames(void)
     uvc_frame_init(&frame, buffer, sizeof(buffer));
     assert(!uvc_packet(&frame, bad_pts, sizeof(bad_pts)));
     assert(uvc_packet(&frame, complete, sizeof(complete)));
-    const uint8_t timestamps[] = {
-        12, 0x8e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xd8, 0xff, 0xd9
-    };
+    const uint8_t timestamps[] = {12, 0x8e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xd8, 0xff, 0xd9};
     assert(uvc_packet(&frame, timestamps, sizeof(timestamps)));
     const uint8_t invalid[] = {20, 0};
     assert(!uvc_packet(&frame, invalid, sizeof(invalid)));
@@ -176,8 +168,7 @@ static void test_diagnostics(void)
     const uint8_t hardware_headers[][12] = {
         {0x0c, 0x8c, 0xe0, 0xa6, 0xf6, 0x5b, 0xad, 0xee, 0x31, 0x5c, 0x29, 0x03},
         {0x0c, 0x8f, 0x40, 0xf6, 0x32, 0x5c, 0x59, 0xf6, 0x32, 0x5c, 0x2e, 0x03},
-        {0x0c, 0x8c, 0x40, 0xf6, 0x32, 0x5c, 0xac, 0xfd, 0x32, 0x5c, 0x2e, 0x03}
-    };
+        {0x0c, 0x8c, 0x40, 0xf6, 0x32, 0x5c, 0xac, 0xfd, 0x32, 0x5c, 0x2e, 0x03}};
     uvc_frame_init(&frame, buffer, sizeof(buffer));
     for (unsigned i = 0; i < 3; ++i)
         assert(!uvc_packet(&frame, hardware_headers[i], 12));

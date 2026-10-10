@@ -23,8 +23,8 @@ RefreshResult refresh_control_poll(RefreshControl *c, bool cancel)
     return c->cancelled ? REFRESH_CANCELLED : c->found ? REFRESH_FOUND : REFRESH_MISSING;
 }
 
-void refresh_status(char *text, size_t capacity, RefreshResult result,
-                    unsigned width, unsigned height)
+void refresh_status(char *text, size_t capacity, RefreshResult result, unsigned width,
+                    unsigned height)
 {
     switch (result) {
     case REFRESH_BUSY:

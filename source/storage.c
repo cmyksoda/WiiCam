@@ -5,8 +5,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-FILE *storage_create(const char *directory, const char *prefix, const char *extension,
-                     char *path, size_t capacity)
+FILE *storage_create(const char *directory, const char *prefix, const char *extension, char *path,
+                     size_t capacity)
 {
     for (unsigned n = 1; n <= 9999; ++n) {
         int length = snprintf(path, capacity, "%s/%s%04u.%s", directory, prefix, n, extension);
@@ -16,13 +16,11 @@ FILE *storage_create(const char *directory, const char *prefix, const char *exte
         }
         int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
         if (fd < 0) {
-            if (errno == EEXIST)
-                continue;
+            if (errno == EEXIST) continue;
             return NULL;
         }
         FILE *file = fdopen(fd, "wb");
-        if (file)
-            return file;
+        if (file) return file;
         close(fd);
         unlink(path);
         return NULL;
@@ -33,13 +31,9 @@ FILE *storage_create(const char *directory, const char *prefix, const char *exte
 
 bool storage_finish(FILE *file, const char *path, bool success)
 {
-    if (!file)
-        return false;
-    if (fflush(file) != 0 || ferror(file))
-        success = false;
-    if (fclose(file) != 0)
-        success = false;
-    if (!success)
-        unlink(path);
+    if (!file) return false;
+    if (fflush(file) != 0 || ferror(file)) success = false;
+    if (fclose(file) != 0) success = false;
+    if (!success) unlink(path);
     return success;
 }

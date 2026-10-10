@@ -3,6 +3,14 @@
   <name>WiiCam</name>
   <coder>cmyksoda</coder>
   <version>0.1.0</version>
-  <short_description>USB photos and silent video</short_description>
-  <long_description>Take photos with a USB camera or record silent MJPEG video. Choose 320 x 240 or 640 x 480, set a photo timer, and refresh the camera source from the menu. Requires IOS58 and an SD card to save. Supports the WC04 camera and selected UVC 1.0 MJPEG cameras. A opens the viewfinder; + changes Photo/Video; 1 changes size; Left/Right sets the timer; 2 refreshes the source. Video is limited to 60 seconds or 128 MiB. HOME saves any recording and exits.</long_description>
+  <short_description>USB Camera Application</short_description>
+  <long_description>Take photos with a USB camera or record silent MJPEG video.
+
+Choose 320 x 240 or 640 x 480, set a photo timer, or refresh the camera source using the menu.
+
+Requires IOS58 and an SD card to save.
+
+Supports the Ubisoft Hercules WC04 camera and selected UVC 1.0 MJPEG cameras.
+
+Video is limited to 60 seconds or 128 MiB. </long_description>
 </app>

@@ -21,8 +21,8 @@ void preview_shutter(Preview *p)
 
 bool preview_offer(Preview *p, const uint8_t *jpeg, size_t length)
 {
-    if (!length || length > p->capacity ||
-        atomic_load_explicit(&p->state, memory_order_acquire) != PREVIEW_EMPTY)
+    if (!length || length > p->capacity
+        || atomic_load_explicit(&p->state, memory_order_acquire) != PREVIEW_EMPTY)
         return false;
     memcpy(p->jpeg, jpeg, length);
     p->length = length;

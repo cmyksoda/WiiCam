@@ -42,10 +42,8 @@ static void complete(Fake *fake, unsigned i)
     assert(fake->active[i]);
     check_owned_buffers(fake);
     int result = fake->sequence[i] == fake->fail_completion ? -7004 : 192;
-    if (fake->cancels && !fake->normal_drain)
-        result = -7022;
-    if (fake->stops)
-        ++fake->late_callbacks;
+    if (fake->cancels && !fake->normal_drain) result = -7022;
+    if (fake->stops) ++fake->late_callbacks;
     fake->active[i] = false;
     iso_queue_complete(&fake->queue.slots[i], result);
 }
@@ -61,14 +59,12 @@ static int submit(void *context, IsoSlot *slot)
         assert(slot->sizes[j] == fake->queue.capacity);
     for (unsigned j = 0; j < ISO_PACKETS * fake->queue.capacity; ++j)
         assert(slot->data[j] == 0);
-    if (++fake->attempts == fake->fail_submit)
-        return -22;
+    if (++fake->attempts == fake->fail_submit) return -22;
     fake->active[i] = true;
     fake->sequence[i] = fake->attempts;
     slot->data[0] = (uint8_t)fake->attempts;
     slot->sizes[0] = 1;
-    if (fake->synchronous)
-        complete(fake, i);
+    if (fake->synchronous) complete(fake, i);
     return 0;
 }
 
@@ -88,8 +84,7 @@ static IsoStop poll(void *context)
 {
     Fake *fake = context;
     check_owned_buffers(fake);
-    if (fake->stop_after && fake->consumed >= fake->stop_after)
-        return fake->requested_stop;
+    if (fake->stop_after && fake->consumed >= fake->stop_after) return fake->requested_stop;
     return ISO_RUNNING;
 }
 
@@ -104,11 +99,10 @@ static void idle(void *context)
     }
     int selected = -1;
     for (unsigned i = 0; i < ISO_QUEUE_DEPTH; ++i) {
-        if (!fake->active[i])
-            continue;
-        if (selected < 0 || (fake->reverse ?
-            fake->sequence[i] > fake->sequence[selected] :
-            fake->sequence[i] < fake->sequence[selected]))
+        if (!fake->active[i]) continue;
+        if (selected < 0
+            || (fake->reverse ? fake->sequence[i] > fake->sequence[selected]
+                              : fake->sequence[i] < fake->sequence[selected]))
             selected = (int)i;
     }
     assert(selected >= 0);
@@ -120,8 +114,7 @@ static void stopping(void *context, IsoStop reason, int failure)
     Fake *fake = context;
     assert(++fake->stops == 1);
     assert(reason != ISO_RUNNING);
-    if (reason == ISO_SUBMIT_FAILED || reason == ISO_COMPLETION_FAILED)
-        assert(failure < 0);
+    if (reason == ISO_SUBMIT_FAILED || reason == ISO_COMPLETION_FAILED) assert(failure < 0);
 }
 
 static void cancel(void *context)
@@ -135,17 +128,18 @@ static void cancel(void *context)
 static void run(Fake *fake, unsigned capacity, IsoStop expected)
 {
     iso_queue_init(&fake->queue, data, sizes, capacity);
-    const IsoHooks hooks = {
-        .submit = submit, .consume = consume, .poll = poll, .idle = idle,
-        .stopping = stopping, .cancel = cancel
-    };
+    const IsoHooks hooks = {.submit = submit,
+                            .consume = consume,
+                            .poll = poll,
+                            .idle = idle,
+                            .stopping = stopping,
+                            .cancel = cancel};
     assert(iso_queue_run(&fake->queue, &hooks, fake) == expected);
     assert(fake->stops == 1 && fake->queue.consumed == fake->consumed);
     for (unsigned i = 0; i < ISO_QUEUE_DEPTH; ++i)
         assert(!fake->active[i] && !fake->queue.slots[i].pending);
     unsigned failed_completion = expected == ISO_COMPLETION_FAILED ? 1 : 0;
-    assert(fake->queue.submitted == fake->queue.consumed +
-           fake->queue.drained + failed_completion);
+    assert(fake->queue.submitted == fake->queue.consumed + fake->queue.drained + failed_completion);
 }
 
 int main(void)
@@ -158,13 +152,14 @@ int main(void)
             assert(fake.queue.drained == ISO_QUEUE_DEPTH - 1);
         }
     }
-    const IsoStop reasons[] = {ISO_CANCELLED, ISO_EXIT, ISO_TIMEOUT, ISO_PHOTO_READY, ISO_RECORD_STOPPED};
+    const IsoStop reasons[] = {ISO_CANCELLED, ISO_EXIT, ISO_TIMEOUT, ISO_PHOTO_READY,
+                               ISO_RECORD_STOPPED};
     for (unsigned i = 0; i < sizeof(reasons) / sizeof(reasons[0]); ++i) {
         for (unsigned normal = 0; normal < 2; ++normal) {
-            Fake fake = {
-                .stop_after = 2, .requested_stop = reasons[i],
-                .normal_drain = normal, .cancel_delay = 5
-            };
+            Fake fake = {.stop_after = 2,
+                         .requested_stop = reasons[i],
+                         .normal_drain = normal,
+                         .cancel_delay = 5};
             run(&fake, 3060, reasons[i]);
             assert(fake.cancels == 1 && fake.late_callbacks == 3);
             assert(fake.queue.submitted == 5 && fake.queue.drained == 3);
@@ -186,6 +181,7 @@ int main(void)
     Fake zero = {0}, oversized = {0};
     run(&zero, 0, ISO_SUBMIT_FAILED);
     run(&oversized, ISO_MAX_PAYLOAD + 1, ISO_SUBMIT_FAILED);
-    puts("PASS: queued ordering, ownership, wraparound, sync callbacks, partial submission, errors, stop and drain");
+    puts(
+        "PASS: queued ordering, ownership, wraparound, sync callbacks, partial submission, errors, stop and drain");
     return 0;
 }

@@ -38,12 +38,13 @@ int main(void)
                     assert(refresh_control_poll(&job.control, true) == REFRESH_CANCELLING);
                 /* Repeated UI polls cannot report completion or undo cancellation. */
                 for (unsigned n = 0; n < 100; ++n)
-                    assert(refresh_control_poll(&job.control, false) ==
-                           (cancel_at == 1 ? REFRESH_CANCELLING : REFRESH_BUSY));
+                    assert(refresh_control_poll(&job.control, false)
+                           == (cancel_at == 1 ? REFRESH_CANCELLING : REFRESH_BUSY));
                 atomic_store_explicit(&job.release, true, memory_order_release);
                 assert(pthread_join(worker, NULL) == 0);
-                RefreshResult expected = cancel_at ? REFRESH_CANCELLED :
-                                         found ? REFRESH_FOUND : REFRESH_MISSING;
+                RefreshResult expected = cancel_at ? REFRESH_CANCELLED
+                                         : found   ? REFRESH_FOUND
+                                                   : REFRESH_MISSING;
                 assert(refresh_control_poll(&job.control, cancel_at == 2) == expected);
                 assert(atomic_load(&job.closed));
                 assert(refresh_control_poll(&job.control, false) == expected);
@@ -52,7 +53,8 @@ int main(void)
     }
     char status[80], other[80];
     refresh_status(status, sizeof(status), REFRESH_FOUND, 320, 240);
-    assert(strstr(status, "320x240") && strstr(status, "MJPEG") && strstr(status, "A opens viewfinder"));
+    assert(strstr(status, "320x240") && strstr(status, "MJPEG")
+           && strstr(status, "A opens viewfinder"));
     refresh_status(other, sizeof(other), REFRESH_FOUND, 640, 480);
     assert(strstr(other, "640x480") && !strstr(other, "320x240"));
     refresh_status(status, sizeof(status), REFRESH_MISSING, 640, 480);
@@ -62,8 +64,14 @@ int main(void)
     assert(strstr(status, "B cancels"));
     refresh_status(status, sizeof(status), REFRESH_CANCELLING, 640, 480);
     assert(strstr(status, "please wait") && !strstr(status, "cancelled"));
-    struct { char text[8]; char guard; } bounded = {.guard = 'x'};
+
+    struct {
+        char text[8];
+        char guard;
+    } bounded = {.guard = 'x'};
+
     refresh_status(bounded.text, sizeof(bounded.text), REFRESH_FOUND, 640, 480);
     assert(!bounded.text[7] && bounded.guard == 'x');
-    puts("PASS: refresh worker publication, deferred/late cancellation, repeated sessions, size-specific results, bounded messages");
+    puts(
+        "PASS: refresh worker publication, deferred/late cancellation, repeated sessions, size-specific results, bounded messages");
 }

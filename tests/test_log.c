@@ -17,7 +17,8 @@ int main(void)
     assert(fread(data, 1, sizeof(data) - 1, file) > 0);
     assert(strcmp(data, "\n[clock unavailable +12.345] Capture started\n"
                         "[clock unavailable +12.345] Second line\n"
-                        "[clock unavailable +12.346] B pressed\n") == 0);
+                        "[clock unavailable +12.346] B pressed\n")
+           == 0);
     fclose(file);
 
     file = tmpfile();

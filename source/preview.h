@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 enum { PREVIEW_EMPTY, PREVIEW_FRAME, PREVIEW_PHOTO };
+
 typedef struct {
     atomic_uint state;
     atomic_bool shutter;
