@@ -62,7 +62,7 @@ static AvRecorder av_recording;
 static uint8_t av_jpeg[WC04_FRAME_CAPACITY];
 static uint8_t audio_stack[32 * 1024] ATTRIBUTE_ALIGN(32);
 
-enum { AV_AUDIO_ONLY, AV_VIDEO_ENABLING, AV_VIDEO_ACTIVE };
+enum { AV_AUDIO_ONLY, AV_VIDEO_PREPARING, AV_VIDEO_PREPARED, AV_VIDEO_ENABLING, AV_VIDEO_ACTIVE };
 
 typedef struct {
     s32 handle;
@@ -72,7 +72,10 @@ typedef struct {
     lwp_t thread;
     atomic_bool stop, done;
     atomic_uint last_ms, phase;
-    unsigned first_ms, first_phase;
+    unsigned first_ms, first_phase, worker_ms;
+    unsigned initial_submit_ms[ISO_QUEUE_DEPTH], initial_complete_ms[ISO_QUEUE_DEPTH];
+    int initial_results[ISO_QUEUE_DEPTH];
+    bool initial_completed[ISO_QUEUE_DEPTH];
     int first_result;
     uint16_t first_sizes[ISO_PACKETS];
     unsigned rejected_ms[MIC_MAX_REJECTED_PACKETS];
@@ -380,13 +383,18 @@ static int probe_transfer(void *context, uint8_t request, uint16_t selector,
     return length;
 }
 
-static bool prepare_camera(s32 handle, const UvcMode *mode, UvcAlternate *alt)
+static bool idle_camera(s32 handle)
 {
     s32 result = WC04_SetAlternate(handle, 0);
     if (result < 0) {
         report("Idle alternate failed: %ld\n", (long)result);
         return false;
     }
+    return true;
+}
+
+static bool probe_camera(s32 handle, const UvcMode *mode, UvcAlternate *alt)
+{
     ProbeContext camera = {.handle = handle, .interface = mode->interface};
     report("Read camera probe seed: GET_MAX, then GET_DEF/GET_CUR if unavailable.\n");
     if (!uvc_negotiate(mode, alt, probe, probe_transfer, &camera)) {
@@ -394,6 +402,11 @@ static bool prepare_camera(s32 handle, const UvcMode *mode, UvcAlternate *alt)
         return false;
     }
     return true;
+}
+
+static bool prepare_camera(s32 handle, const UvcMode *mode, UvcAlternate *alt)
+{
+    return idle_camera(handle) && probe_camera(handle, mode, alt);
 }
 
 static bool activate_camera(s32 handle, const UvcAlternate *alt)
@@ -1105,11 +1118,28 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
     free(samples);
 }
 
+static s32 av_audio_finished(s32 result, void *context)
+{
+    IsoSlot *slot = context;
+    unsigned index = (unsigned)(slot - av_audio.queue.slots);
+    if (!av_audio.initial_completed[index]) {
+        av_audio.initial_complete_ms[index] =
+            (unsigned)ticks_to_millisecs(gettime() - av_audio.start);
+        av_audio.initial_results[index] = result;
+        av_audio.initial_completed[index] = true;
+    }
+    return iso_finished(result, context);
+}
+
 static int av_audio_submit(void *context, IsoSlot *slot)
 {
-    const AvCapture *audio = context;
+    AvCapture *audio = context;
+    if (audio->queue.submitted < ISO_QUEUE_DEPTH) {
+        unsigned index = (unsigned)(slot - audio->queue.slots);
+        audio->initial_submit_ms[index] = (unsigned)ticks_to_millisecs(gettime() - audio->start);
+    }
     return USB_ReadIsoMsgAsync(audio->handle, audio->mode.endpoint, ISO_PACKETS, slot->sizes,
-                               slot->data, iso_finished, slot);
+                               slot->data, av_audio_finished, slot);
 }
 
 static bool av_audio_consume(void *context, const IsoSlot *slot)
@@ -1164,6 +1194,7 @@ static void av_audio_cancel(void *context)
 static void *av_audio_worker(void *context)
 {
     AvCapture *audio = context;
+    audio->worker_ms = (unsigned)ticks_to_millisecs(gettime() - audio->start);
     const IsoHooks hooks = {.submit = av_audio_submit,
                             .consume = av_audio_consume,
                             .poll = av_audio_poll,
@@ -1233,10 +1264,17 @@ static void av_audio_close(void)
            stream->packets, stream->empty, stream->smallest, stream->largest, stream->rejected,
            stream->peak, atomic_load(&stream->failed),
            (unsigned long long)(stream->last_ms - stream->first_ms), audio_stream_valid(stream));
+    report("A/V initial USB timing: worker_ms=%u data=%p sizes=%p; offsets from audio start.\n",
+           av_audio.worker_ms, (void *)audio_iso_data, (void *)audio_iso_sizes);
+    for (unsigned n = 0; n < av_audio.queue.submitted && n < ISO_QUEUE_DEPTH; ++n)
+        report("A/V initial request=%u submit_ms=%u callback_ms=%u completed=%u result=%d\n", n,
+               av_audio.initial_submit_ms[n], av_audio.initial_complete_ms[n],
+               av_audio.initial_completed[n], av_audio.initial_results[n]);
     if (av_audio.queue.consumed) {
-        report("A/V first audio batch: result=%d at_ms=%u phase=%u; "
-               "phase 0=audio-only 1=video-enabling 2=video-active.\n",
-               av_audio.first_result, av_audio.first_ms, av_audio.first_phase);
+        report(
+            "A/V first audio batch: result=%d at_ms=%u phase=%u; "
+            "phase 0=audio-only 1=video-controls 2=video-prepared 3=video-enabling 4=video-active.\n",
+            av_audio.first_result, av_audio.first_ms, av_audio.first_phase);
         for (unsigned n = 0; n < ISO_PACKETS; ++n)
             report("A/V first audio slot=%u returned=%u cap=%u\n", n, av_audio.first_sizes[n],
                    av_audio.mode.packet_capacity);
@@ -1254,9 +1292,8 @@ static void av_audio_close(void)
     av_audio.opened = false;
 }
 
-static IsoStop av_audio_prime(const UvcMode *mode)
+static IsoStop av_audio_prime(unsigned before)
 {
-    draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height, "Checking microphone - B cancels");
     uint64_t start = gettime(), last_input = start;
     for (;;) {
         uint64_t now = gettime();
@@ -1271,9 +1308,12 @@ static IsoStop av_audio_prime(const UvcMode *mode)
         unsigned received = audio_stream_position(&av_audio.stream);
         /* The main thread consumes only until the preview worker takes ownership. */
         audio_stream_discard(&av_audio.stream);
-        if (received >= AUDIO_BLOCK_BYTES) {
-            report("A/V audio-only ready: PCM_bytes=%u elapsed_ms=%llu; video still idle.\n",
-                   received, (unsigned long long)ticks_to_millisecs(now - av_audio.start));
+        if (received - before >= AUDIO_BLOCK_BYTES) {
+            report("A/V microphone ready: new_PCM_bytes=%u total_PCM_bytes=%u elapsed_ms=%llu "
+                   "phase=%u; video still idle.\n",
+                   received - before, received,
+                   (unsigned long long)ticks_to_millisecs(now - av_audio.start),
+                   atomic_load(&av_audio.phase));
             return ISO_RUNNING;
         }
         if (ticks_to_millisecs(now - start) >= 1000) return ISO_TIMEOUT;
@@ -1283,12 +1323,26 @@ static IsoStop av_audio_prime(const UvcMode *mode)
 
 static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt)
 {
-    /* Keep video idle while opening/configuring audio, then prove microphone reception. */
-    if (!prepare_camera(handle, mode, alt) || !av_audio_start(handle, mode)) {
+    draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height, "Checking microphone - B cancels");
+    if (!idle_camera(handle) || !av_audio_start(handle, mode)) {
         av_recording.failed = true;
         return ISO_SUBMIT_FAILED;
     }
-    IsoStop result = av_audio_prime(mode);
+    IsoStop result = av_audio_prime(0);
+    if (result == ISO_RUNNING) {
+        atomic_store(&av_audio.phase, AV_VIDEO_PREPARING);
+        report("A/V starting UVC controls after microphone reception: PCM_bytes=%u\n",
+               audio_stream_position(&av_audio.stream));
+        if (!probe_camera(handle, mode, alt))
+            result = ISO_SUBMIT_FAILED;
+        else if (atomic_load(&av_audio.stream.failed))
+            result = ISO_COMPLETION_FAILED;
+        else {
+            atomic_store(&av_audio.phase, AV_VIDEO_PREPARED);
+            /* Require fresh PCM after controls; earlier audio cannot satisfy this gate. */
+            result = av_audio_prime(audio_stream_position(&av_audio.stream));
+        }
+    }
     if (result == ISO_RUNNING) {
         unsigned before = audio_stream_position(&av_audio.stream);
         atomic_store(&av_audio.phase, AV_VIDEO_ENABLING);
@@ -1348,7 +1402,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.2 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.3 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");
