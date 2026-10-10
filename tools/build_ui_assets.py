@@ -57,7 +57,7 @@ badge_font = ImageFont.truetype(str(font_path), badge_font_size*badge_scale)
 badges = bytearray()
 badge_metrics = []
 # Optical offsets follow visible-ink centering without moving circle centers.
-optical_offsets = {'A': (.25, -1), 'B': (-.25, 0), '+': (0, 0),
+optical_offsets = {'A': (.25, -1), 'B': (0, 0), '+': (0, 0),
                    '1': (-.5, 0), '2': (0, 0), 'HOME': (0, -1)}
 for label in ('A', 'B', '+', '1', '2', 'HOME'):
     if label == 'HOME':
