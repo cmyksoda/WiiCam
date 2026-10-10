@@ -1353,6 +1353,29 @@ static IsoStop av_audio_prime(unsigned before)
     }
 }
 
+static int av_video_alternate(s32 handle, const UvcMode *mode)
+{
+    probe[0] = 0xff;
+    s32 result = USB_ReadCtrlMsg(handle, 0x81, 10, 0, mode->interface, 1, probe);
+    int payload = uvc_control_payload_length(result, 1);
+    report("A/V GET_INTERFACE: interface=%u raw=%ld payload=%d alternate=%d\n", mode->interface,
+           (long)result, payload, payload == 1 ? probe[0] : -1);
+    return payload == 1 ? probe[0] : -1;
+}
+
+static bool av_video_idle(s32 handle, const UvcMode *mode)
+{
+    int alternate = av_video_alternate(handle, mode);
+    if (alternate < 0) return false;
+    if (!alternate) {
+        /* Avoid resetting an already idle video interface while audio is live. */
+        report("A/V video already idle; redundant alternate change skipped.\n");
+        return true;
+    }
+    report("A/V video alternate=%d; stopping it before negotiation.\n", alternate);
+    return idle_camera(handle) && av_video_alternate(handle, mode) == 0;
+}
+
 static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt)
 {
     draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height, "Checking microphone - B cancels");
@@ -1363,9 +1386,9 @@ static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt)
     IsoStop result = av_audio_prime(0);
     if (result == ISO_RUNNING) {
         atomic_store(&av_audio.phase, AV_VIDEO_IDLING);
-        report("A/V setting video idle after microphone reception: PCM_bytes=%u\n",
+        report("A/V checking video idle after microphone reception: PCM_bytes=%u\n",
                audio_stream_position(&av_audio.stream));
-        if (!idle_camera(handle))
+        if (!av_video_idle(handle, mode))
             result = ISO_SUBMIT_FAILED;
         else if (atomic_load(&av_audio.stream.failed))
             result = ISO_COMPLETION_FAILED;
@@ -1448,7 +1471,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.5 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.6 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");

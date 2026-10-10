@@ -26,6 +26,10 @@ code = settle + "\n" + main[globals_start:globals_end]
 code += "static bool av_audio_start(s32 handle, const UvcMode *mode);\n"
 code += "static void av_audio_close(void);\n"
 code += main[prepare_start:prepare_end] + main[wait_start:wait_end] + main[prime_start:prime_end]
+uvc = (root / "source/uvc.c").read_text()
+payload_start = uvc.index("int uvc_control_payload_length(")
+payload_end = uvc.index("bool uvc_interval_supported(", payload_start)
+code += uvc[payload_start:payload_end]
 with tempfile.TemporaryDirectory(prefix="wiicam-av-startup-") as directory:
     work = Path(directory)
     (work / "av_startup_under_test.h").write_text(code)

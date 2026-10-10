@@ -58,6 +58,10 @@ static uint64_t clock_ms, controls_ms, idle_ms;
 static bool exit_requested, silent, settling_test;
 static char events[32];
 static unsigned event_count;
+static bool idle_unit_test;
+static unsigned idle_reads, idle_sets, expected_interface = 1;
+static int idle_raw[2], idle_set_result;
+static uint8_t idle_alternate[2];
 static uint8_t probe[UVC_PROBE_LENGTH];
 
 static struct {
@@ -65,6 +69,8 @@ static struct {
 } av_recording;
 
 static s32 WC04_SetAlternate(s32 handle, uint8_t alternate);
+static s32 USB_ReadCtrlMsg(s32 handle, uint8_t type, uint8_t request, uint16_t value,
+                           uint16_t index, uint16_t length, void *data);
 static int probe_transfer(void *context, uint8_t request, uint16_t selector, uint8_t *data);
 static uint64_t gettime(void);
 static uint64_t ticks_to_millisecs(uint64_t ticks);
@@ -87,21 +93,12 @@ static s32 WC04_SetAlternate(s32 handle, uint8_t alternate)
 {
     assert(handle == 42);
     if (!alternate) {
+        ++idle_sets;
+        if (idle_unit_test) return idle_set_result;
+        /* A/V must not reset video when GET_INTERFACE already reports zero. */
+        assert(silent);
         event('I');
         ++idles;
-        idle_ms = clock_ms;
-        if (!silent) {
-            assert(starts == 1 && av_audio.opened && !probes && !enables);
-            assert(atomic_load(&av_audio.phase) == AV_VIDEO_IDLING);
-            assert(audio_stream_position(&av_audio.stream) >= AUDIO_BLOCK_BYTES);
-            if (scenario == FAIL_DURING_IDLE) atomic_store(&av_audio.stream.failed, true);
-            if (scenario == IDLE_PCM_ONLY) {
-                uint8_t data[32] = {0};
-                for (unsigned n = 0; n < 100; ++n)
-                    assert(
-                        audio_stream_packet(&av_audio.stream, data, sizeof(data), 192, clock_ms));
-            }
-        }
         return scenario == IDLE_FAIL ? -4 : 0;
     }
     assert(alternate == 3);
@@ -115,6 +112,33 @@ static s32 WC04_SetAlternate(s32 handle, uint8_t alternate)
         if (scenario == FAIL_DURING_ENABLE) atomic_store(&av_audio.stream.failed, true);
     }
     return scenario == ENABLE_FAIL ? -4 : 0;
+}
+
+static s32 USB_ReadCtrlMsg(s32 handle, uint8_t type, uint8_t request, uint16_t value,
+                           uint16_t index, uint16_t length, void *data)
+{
+    assert(handle == 42 && type == 0x81 && request == 10 && !value);
+    assert(index == expected_interface && length == 1 && data == probe);
+    if (idle_unit_test) {
+        assert(idle_reads < 2);
+        probe[0] = idle_alternate[idle_reads];
+        return idle_raw[idle_reads++];
+    }
+    ++idle_reads;
+    ++idles;
+    idle_ms = clock_ms;
+    event('I');
+    assert(starts == 1 && av_audio.opened && !probes && !enables && !silent);
+    assert(atomic_load(&av_audio.phase) == AV_VIDEO_IDLING);
+    assert(audio_stream_position(&av_audio.stream) >= AUDIO_BLOCK_BYTES);
+    if (scenario == FAIL_DURING_IDLE) atomic_store(&av_audio.stream.failed, true);
+    if (scenario == IDLE_PCM_ONLY) {
+        uint8_t samples[32] = {0};
+        for (unsigned n = 0; n < 100; ++n)
+            assert(audio_stream_packet(&av_audio.stream, samples, sizeof(samples), 192, clock_ms));
+    }
+    probe[0] = 0;
+    return scenario == IDLE_FAIL ? -7102 : 9;
 }
 
 static int probe_transfer(void *context, uint8_t request, uint16_t selector, uint8_t *data)
@@ -250,7 +274,9 @@ static void reset(void)
 {
     starts = enables = captures = closes = event_count = probes = idles = 0;
     clock_ms = controls_ms = idle_ms = 0;
-    exit_requested = silent = false;
+    exit_requested = silent = idle_unit_test = false;
+    idle_reads = idle_sets = 0;
+    expected_interface = 1;
     memset(events, 0, sizeof(events));
     memset(&av_audio, 0, sizeof(av_audio));
     av_recording.failed = false;
@@ -296,7 +322,7 @@ int main(void)
                == (expected[scenario] == ISO_SUBMIT_FAILED
                    || expected[scenario] == ISO_COMPLETION_FAILED
                    || expected[scenario] == ISO_TIMEOUT));
-        assert(!av_audio.opened);
+        assert(!av_audio.opened && !idle_sets);
         if (scenario == AUDIO_OPEN_FAIL) {
             assert(!enables && !captures && !closes);
         } else {
@@ -356,6 +382,35 @@ int main(void)
         assert(clock_ms == settle_times[n]);
         assert(!starts && !probes && !enables && !captures && !closes);
     }
+
+    const struct {
+        int first_raw, second_raw, set_result;
+        uint8_t first_alternate, second_alternate;
+        bool expected;
+        unsigned reads, sets;
+    } idle_cases[] = {
+        {9, 9, 0, 0, 0, true, 1, 0},      {1, 9, 0, 0, 0, false, 1, 0},
+        {-7102, 9, 0, 0, 0, false, 1, 0}, {0, 9, 0, 0, 0, false, 1, 0},
+        {8, 9, 0, 0, 0, false, 1, 0},     {10, 9, 0, 0, 0, false, 1, 0},
+        {9, 9, 0, 3, 0, true, 2, 1},      {9, 9, 0, 3, 3, false, 2, 1},
+        {9, 8, 0, 3, 0, false, 2, 1},     {9, 9, -4, 3, 0, false, 1, 1},
+        {9, -7102, 0, 3, 0, false, 2, 1}, {9, 9, 0, 255, 0, true, 2, 1},
+    };
+
+    for (unsigned n = 0; n < sizeof(idle_cases) / sizeof(idle_cases[0]); ++n) {
+        reset();
+        idle_unit_test = true;
+        idle_raw[0] = idle_cases[n].first_raw;
+        idle_raw[1] = idle_cases[n].second_raw;
+        idle_alternate[0] = idle_cases[n].first_alternate;
+        idle_alternate[1] = idle_cases[n].second_alternate;
+        idle_set_result = idle_cases[n].set_result;
+        UvcMode checked_mode = mode;
+        if (n == 11) expected_interface = checked_mode.interface = 7;
+        assert(av_video_idle(42, &checked_mode) == idle_cases[n].expected);
+        assert(idle_reads == idle_cases[n].reads && idle_sets == idle_cases[n].sets);
+        assert(!starts && !probes && !enables && !captures && !closes);
+    }
     puts(
-        "PASS: actual startup: 29 readiness/idle/control/failure cases, 4 silent paths, 4 bounded settling/cancellation cases");
+        "PASS: actual startup: 29 readiness/idle/control/failure cases, 4 silent paths, 4 bounded settling/cancellation cases, 12 checked video-idle cases");
 }
