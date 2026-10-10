@@ -5,10 +5,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 static uint32_t framebuffer[864*576/2];
-static uint8_t photo[320*240*3];
+static uint8_t photo[640*480*3];
 static uint8_t clamp(int n) { return n < 0 ? 0 : n > 255 ? 255 : n; }
 static void render_size(const char *name, ScreenPage page, ScreenInfo info, bool wide, unsigned width)
 {
+    for (unsigned y = 0; y < width*3/4; ++y)
+        for (unsigned x = 0; x < width; ++x) {
+            photo[(y*width+x)*3] = x*255/width;
+            photo[(y*width+x)*3+1] = y*255/(width*3/4);
+            photo[(y*width+x)*3+2] = 144;
+        }
     Screen screen = {framebuffer, wide ? 854 : 640, 480, wide ? 854 : 640, wide};
     screen_draw(&screen, page, page == SCREEN_LIVE || page == SCREEN_REVIEW ? photo : NULL,
                 width, width*3/4, &info);
@@ -43,12 +49,6 @@ static void refresh(const char *name, RefreshResult result, unsigned phase, bool
 }
 int main(void)
 {
-    for (unsigned y = 0; y < 240; ++y)
-        for (unsigned x = 0; x < 320; ++x) {
-            photo[(y*320+x)*3] = x*255/320;
-            photo[(y*320+x)*3+1] = y*255/240;
-            photo[(y*320+x)*3+2] = 144;
-        }
     render("menu", SCREEN_MENU, (ScreenInfo){.sd=true}, false);
     render("no-signal", SCREEN_NO_SIGNAL, (ScreenInfo){.sd=true}, false);
     render("no-signal-wide", SCREEN_NO_SIGNAL, (ScreenInfo){.sd=true}, true);
@@ -65,5 +65,13 @@ int main(void)
     refresh("refresh-cancelling", REFRESH_CANCELLING, 5, false, 640);
     refresh("refresh-cancelled", REFRESH_CANCELLED, 0, false, 640);
     refresh("refresh-wide", REFRESH_BUSY, 2, true, 640);
+    render("live", SCREEN_LIVE, (ScreenInfo){.sd=true}, false);
+    render("shutter", SCREEN_LIVE, (ScreenInfo){.sd=true,.shutter=true}, false);
+    render("waiting", SCREEN_WAITING, (ScreenInfo){.sd=true,.status="Starting camera..."}, false);
+    render("signal-recording", SCREEN_NO_SIGNAL, (ScreenInfo){.sd=true,.video=true,.recording=true}, false);
+    render("menu-no-sd", SCREEN_MENU, (ScreenInfo){.status="No SD - preview only"}, false);
+    render("menu-timer-10", SCREEN_MENU, (ScreenInfo){.sd=true,.timer=10}, false);
+    render_size("live-640", SCREEN_LIVE, (ScreenInfo){.sd=true}, false, 640);
+    render_size("menu-wide", SCREEN_MENU, (ScreenInfo){.sd=true}, true, 640);
     puts("PASS: UI renders ready for host visual review");
 }

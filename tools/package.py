@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 cmyksoda
-"""Package only the experimental runtime, installation note, and licenses."""
+"""Package only the WiiCam runtime, installation note, and licenses."""
 
 import argparse
 import json
@@ -12,12 +12,14 @@ import struct
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = ROOT / "dist/apps/wc04-camera-experimental"
+APP = ROOT / "dist/apps/wiicam"
 FILES = [
     "boot.dol",
     "meta.xml",
+    "icon.png",
     "INSTALL.txt",
     "licenses/ASSET-PROVENANCE.txt",
+    "licenses/HOME-PROVENANCE.json",
     "licenses/Vecteezy-License-Information.pdf",
     "licenses/UI-font.txt",
     "licenses/WC04-GPLv3.txt",
@@ -61,7 +63,7 @@ def main():
     if not args.local_test:
         parser.error('font-derived asset redistribution is unverified; only --local-test is supported')
     font = json.loads((ROOT / 'build/ui-font.json').read_text())
-    for name in ('ASSET-PROVENANCE.txt', 'Vecteezy-License-Information.pdf'):
+    for name in ('ASSET-PROVENANCE.txt', 'HOME-PROVENANCE.json', 'Vecteezy-License-Information.pdf'):
         shutil.copyfile(ROOT / 'assets' / name, APP / 'licenses' / name)
     (APP / 'licenses/UI-font.txt').write_text(
         'PRIVATE LOCAL TEST ONLY\nFont: ' + ' '.join(font['name']) +
@@ -72,14 +74,14 @@ def main():
     data = (APP / "boot.dol").read_bytes()
     validate_dol(data)
     (APP / "licenses/WC04-GPLv3.txt").write_bytes((ROOT / "LICENSE").read_bytes())
-    archive = ROOT / "dist/WC04-Camera-0.3.5-uvc-experimental-local-test.zip"
+    archive = ROOT / "dist/WiiCam-0.1.0-local-test.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
         for name in FILES:
-            package.write(APP / name, f"apps/wc04-camera-experimental/{name}")
+            package.write(APP / name, f"apps/wiicam/{name}")
     with zipfile.ZipFile(archive) as package:
         assert package.testzip() is None
-        assert package.namelist() == [f"apps/wc04-camera-experimental/{name}" for name in FILES]
-        assert package.read("apps/wc04-camera-experimental/boot.dol") == data
+        assert package.namelist() == [f"apps/wiicam/{name}" for name in FILES]
+        assert package.read("apps/wiicam/boot.dol") == data
     print(f"DOL: {len(data)} bytes; SHA-256 {sha256(data).hexdigest()}")
     print(f"ZIP: {archive.relative_to(ROOT)}; SHA-256 {sha256(archive.read_bytes()).hexdigest()}")
 

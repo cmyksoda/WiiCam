@@ -85,16 +85,25 @@ static void text(int x, int baseline, const char *message, unsigned size, unsign
     }
 }
 
-static void centered(int x, int baseline, const char *message, unsigned size, unsigned color)
-{
-    text(x-text_width(message, size)/2, baseline, message, size, color);
-}
-
 static void key(int x, int y, const char *label, unsigned fill, unsigned line, unsigned ink)
 {
-    round_box(x-14, y-14, 28, 28, 14, line);
-    round_box(x-13, y-13, 26, 26, 13, fill);
-    centered(x, y+7, label, 20, ink);
+    for (int row = -14; row <= 14; ++row)
+        for (int col = -14; col <= 14; ++col) {
+            unsigned ring = 0, interior = 0;
+            for (int sy = 0; sy < 4; ++sy)
+                for (int sx = 0; sx < 4; ++sx) {
+                    int dx = 8*col + 2*sx-3, dy = 8*row + 2*sy-3;
+                    int distance = dx*dx+dy*dy;
+                    ring += distance <= 104*104 && distance >= 92*92;
+                    interior += distance < 92*92;
+                }
+            if (interior) pixel(x+col,y+row,fill,interior*255/16);
+            if (ring) pixel(x+col,y+row,line,ring*255/16);
+        }
+    if (*label) {
+        const UiGlyph *g = font(20) + (*label >= 32 && *label <= 126 ? *label-32 : '?'-32);
+        text(x-g->x-g->w/2, y-g->y-g->h/2, label, 20, ink);
+    }
 }
 
 static void loading_circle(int x, int y, unsigned phase, unsigned color)
@@ -111,12 +120,56 @@ static void loading_circle(int x, int y, unsigned phase, unsigned color)
     }
 }
 
-static void home(int x)
+static int text_right_edge(const char *message, unsigned size)
 {
-    round_box(x, 419, 68, 25, 12, 0xbcced6);
-    round_box(x+1, 420, 66, 23, 11, 0xffffff);
-    centered(x+34, 438, "HOME", 18, 0x253f4c);
-    text(x+76, 438, "Exit", 20, 0x4e6572);
+    int advance = 0, right = 0;
+    for (; *message; ++message) {
+        const UiGlyph *g = font(size) + (*message >= 32 && *message <= 126 ? *message-32 : '?'-32);
+        if (advance+g->x+g->w > right) right = advance+g->x+g->w;
+        advance += g->advance;
+    }
+    return right;
+}
+
+static void text_top(int x, int y, const char *message, unsigned size, unsigned color)
+{
+    int top = 0;
+    for (const char *p = message; *p; ++p) {
+        const UiGlyph *g = font(size) + (*p >= 32 && *p <= 126 ? *p-32 : '?'-32);
+        if (g->h && g->y < top) top = g->y;
+    }
+    text(x, y-top, message, size, color);
+}
+
+static void status_line(int left, int y, int width, const char *message, unsigned color, bool center)
+{
+    unsigned size = 18;
+    if (text_width(message, size) > width) size = 15;
+    if (text_width(message, size) > width) size = 12;
+    text_top(center ? left+(width-text_width(message,size))/2 : left, y, message, size, color);
+}
+
+static void home(int x, int y)
+{
+    key(x+14, y+12, "", 0, 0xb8b8b8, 0xffffff);
+    for (unsigned row = 0; row < UI_HOME_HEIGHT; ++row)
+        for (unsigned col = 0; col < UI_HOME_WIDTH; ++col)
+            pixel(x+14-(int)UI_HOME_WIDTH/2+col, y+12-(int)UI_HOME_HEIGHT/2+row,
+                  0xffffff, ui_home[row*UI_HOME_WIDTH+col]);
+    text_top(x+35, y+2, "Exit", 18, 0xb8b8b8);
+}
+
+static void refresh_arrow(int x, int y)
+{
+    for (int dy = -10; dy <= 10; ++dy)
+        for (int dx = -10; dx <= 10; ++dx) {
+            int d = dx*dx+dy*dy;
+            if (d >= 72 && d <= 100 && !(dx > 4 && dy < 4))
+                pixel(x+dx, y+dy, 0xb8b8b8, 255);
+        }
+    for (int dy = 0; dy < 7; ++dy)
+        for (int dx = 0; dx <= dy; ++dx)
+            pixel(x+10-dx, y-10+dy, 0xb8b8b8, 255);
 }
 
 static void image_rgb(const uint8_t *rgb, unsigned width, unsigned height, int x, int y)
@@ -127,117 +180,102 @@ static void image_rgb(const uint8_t *rgb, unsigned width, unsigned height, int x
 
 static void compose(ScreenPage page, unsigned width, unsigned height, const ScreenInfo *i)
 {
-    unsigned w = logical_width, margin = (w*75+500)/1000;
-    const unsigned ink = 0x253f4c, muted = 0x4e6572, line = 0xbcced6, cyan = 0x006a82;
-    for (unsigned y = 0; y < 480; ++y)
-        for (unsigned x = 0; x < w; ++x) {
-            unsigned top[] = {251,253,254}, bottom[] = {220,232,237};
-            unsigned color = 0;
-            for (unsigned c = 0; c < 3; ++c)
-                color = (color << 8) | (top[c]*(480-y)+bottom[c]*y)/480;
-            if (y > 418u-24*x*(w-x)/(w*w))
-                color = 0xedf3f5;
-            pixel(x, y, color, 255);
-        }
-    text(margin, 60, "WC04 Camera", page == SCREEN_MENU ? 28 : 25, ink);
+    const unsigned white=0xffffff, gray=0xb8b8b8, line=0x333333;
+    const unsigned cyan=0x00ffff, magenta=0xff00ff, yellow=0xffff00;
+    int w=(int)logical_width, left=(w-544)/2, right=left+544;
+    memset(canvas, 0, sizeof(canvas));
+    text_top(left, 40, "WiiCam", 28, white);
     const char *heading = page == SCREEN_MENU ? (i->sd ? "SD ready" : "No SD") :
         page == SCREEN_REVIEW ? "Photo review" : page == SCREEN_NO_SIGNAL ? "No signal" :
-        page == SCREEN_WAITING ? "Please wait" : i->recording ? "Recording" : "Live";
-    int hx = w-margin-text_width(heading, 18);
-    round_box(hx-17, 48, 7, 7, 3, page == SCREEN_NO_SIGNAL ? 0x805d04 : i->recording ? 0x984668 : cyan);
-    text(hx, 59, heading, 18, muted);
-    round_box(margin, 76, 11, 3, 1, 0x8ad0e0);
-    round_box(margin+15, 76, 11, 3, 1, 0xd993b5);
-    round_box(margin+30, 76, 11, 3, 1, 0xefd17e);
-    text(margin+60, 78, "USB experimental", 12, muted);
+        page == SCREEN_WAITING ? "Please wait" : i->recording ? "Recording" :
+        i->video ? "Video" : "Photo";
+    unsigned accent = i->recording ? magenta : cyan;
+    text_top(right-text_right_edge(heading,18),49,heading,18,
+             page == SCREEN_MENU ? gray : page == SCREEN_NO_SIGNAL ? yellow : accent);
+    text_top(right-text_right_edge("v0.1.0",15),424,"v0.1.0",15,gray);
     if (page == SCREEN_MENU) {
-        int left = (w-544)/2;
-        round_box(left, 102, 544, 294, 24, 0xd3e1e6);
-        round_box(left, 98, 544, 294, 24, line);
-        round_box(left+1, 99, 542, 292, 23, 0xffffff);
-        for (unsigned y = 0; y < UI_ICON_HEIGHT; ++y)
-            for (unsigned x = 0; x < UI_ICON_WIDTH; ++x) {
-                const unsigned char *p = ui_icon + (y*UI_ICON_WIDTH+x)*4;
-                pixel(left+38+x, 123+y, p[0]<<16 | p[1]<<8 | p[2], p[3]);
-            }
-        centered(left+103, 298, "Vecteezy.com", 12, muted);
-        text(left+194, 146, "Ready when", 28, ink);
-        text(left+194, 180, "you are.", 28, ink);
-        text(left+194, 214, "Connect a USB camera.", 20, muted);
-        round_box(left+187, 237, 325, 58, 29, cyan);
-        round_box(left+188, 238, 323, 56, 28, 0xe2f5fb);
-        key(left+215, 266, "A", 0xe2f5fb, cyan, cyan);
-        text(left+242, 274, "Open viewfinder", 22, cyan);
-        round_box(left+30, 316, 484, 1, 0, line);
-        key(left+43, 341, "1", 0xfff1c9, 0xc4a257, 0x735509);
-        char size[40];
-        snprintf(size, sizeof(size), "Size: %u x %u", width, height);
-        text(left+65, 348, size, 20, ink);
-        if (i->refreshing)
-            loading_circle(left+303, 341, i->refresh_phase, cyan);
-        else
-            key(left+303, 341, "2", 0xffffff, line, ink);
-        text(left+325, 348, "Refresh camera source", 18, ink);
-        text(left+30, 378, i->video ? "+ Mode: Video (silent)" : "+ Mode: Photo", 15, muted);
-        char timer[40];
-        if (i->video)
-            snprintf(timer, sizeof(timer), "60 s / 128 MiB limit");
-        else if (i->timer)
-            snprintf(timer, sizeof(timer), "Left/Right: Timer %u s", i->timer);
-        else
-            snprintf(timer, sizeof(timer), "Left/Right: Timer Off");
-        text(left+290, 378, timer, 15, muted);
-        if (i->status && *i->status)
-            centered(w/2, 411, i->status, 15, muted);
-        home(w/2-58);
+        unsigned action_fill = i->refreshing ? line : cyan;
+        unsigned action_ink = i->refreshing ? 0x777777 : 0;
+        round_box(left,106,544,90,3,action_fill);
+        key(left+28,151,"A",action_fill,action_ink,action_ink);
+        text_top(left+55,138,"Open viewfinder",25,action_ink);
+        round_box(left,223,544,1,0,line);
+        round_box(left+181,237,1,59,0,line);
+        round_box(left+362,237,1,59,0,line);
+        key(left+14,250,"+",0,magenta,magenta);
+        text_top(left+39,239,"Mode",18,gray);
+        text_top(left,277,i->video ? "Video" : "Photo",22,white);
+        key(left+206,250,"1",0,yellow,yellow);
+        text_top(left+232,239,"Size",18,gray);
+        char size[40], timer[40];
+        snprintf(size,sizeof(size),"%u x %u",width,height);
+        text_top(left+194,277,size,22,white);
+        text_top(left+377,239,i->video ? "Recording limit" : "Left / Right",18,gray);
+        if (i->video) snprintf(timer,sizeof(timer),"60s / 128MiB");
+        else if (i->timer) snprintf(timer,sizeof(timer),"Timer %u s",i->timer);
+        else snprintf(timer,sizeof(timer),"Timer off");
+        text_top(left+377,277,timer,i->video ? 18 : 22,white);
+        round_box(left,315,544,1,0,line);
+        key(left+14,346,"2",0,i->refreshing ? yellow : gray,i->refreshing ? yellow : gray);
+        text_top(left+40,335,"Refresh camera source",20,i->refreshing ? yellow : white);
+        if (i->refreshing) loading_circle(right-14,346,i->refresh_phase,yellow);
+        else refresh_arrow(right-14,346);
+        status_line(left,374,544,i->status && *i->status ? i->status :
+                    "Open viewfinder to start the camera.",gray,false);
+        home(left,420);
         return;
     }
-    int left = (w-360)/2;
-    round_box(left-6, 88, 372, 282, 9, 0xcddde3);
-    round_box(left-5, 84, 370, 280, 8, line);
-    round_box(left-4, 85, 368, 278, 7, 0xffffff);
-    image_rgb(ui_bars, 360, 270, left, 89);
+    int picture=(w-360)/2;
+    image_rgb(ui_bars,360,270,picture,99);
+    for (unsigned n=0; n<4; ++n) {
+        int x=picture-4+(n%2)*368, y=95+(n/2)*278;
+        int dx=n%2 ? -1 : 1, dy=n/2 ? -1 : 1;
+        for (int at=0; at<=12; ++at) {
+            pixel(x+dx*at,y,accent,255); pixel(x+dx*at,y+dy,accent,255);
+            pixel(x,y+dy*at,accent,255); pixel(x+dx,y+dy*at,accent,255);
+        }
+    }
     if (i->countdown && page == SCREEN_LIVE) {
         char count[16];
-        snprintf(count, sizeof(count), "%u", i->countdown);
-        round_box(w/2-44, 178, 88, 88, 20, 0xffffff);
-        centered(w/2, 239, count, 48, cyan);
+        snprintf(count,sizeof(count),"%u",i->countdown);
+        round_box(w/2-36,194,72,80,0,yellow);
+        round_box(w/2-34,196,68,76,0,0);
+        text_top(w/2-text_width(count,48)/2,205,count,48,yellow);
     }
     char status[100];
-    if (i->status && *i->status)
-        snprintf(status, sizeof(status), "%s", i->status);
+    if (i->status && *i->status) snprintf(status,sizeof(status),"%s",i->status);
     else if (page == SCREEN_NO_SIGNAL)
-        snprintf(status, sizeof(status), "%s", i->recording ?
+        snprintf(status,sizeof(status),"%s",i->recording ?
                  "Signal lost - B stops recording" : "Waiting for camera signal");
     else if (i->recording)
-        snprintf(status, sizeof(status), "REC %02u:%02u / 01:00 - A stops", i->seconds/60, i->seconds%60);
+        snprintf(status,sizeof(status),"REC %02u:%02u / 01:00  |  Silent video",i->seconds/60,i->seconds%60);
     else if (i->countdown)
-        snprintf(status, sizeof(status), "Photo in %u - B cancels", i->countdown);
-    else if (i->shutter)
-        snprintf(status, sizeof(status), "Taking photo...");
+        snprintf(status,sizeof(status),"%u x %u  |  Photo in %u  |  %s",width,height,i->countdown,i->sd ? "SD ready" : "No SD");
+    else if (i->shutter) snprintf(status,sizeof(status),"Taking photo...");
     else if (i->video)
-        snprintf(status, sizeof(status), "%u x %u - silent video - %s", width, height, i->sd ? "SD ready" : "No SD");
+        snprintf(status,sizeof(status),"%u x %u  |  Silent video  |  %s",width,height,i->sd ? "SD ready" : "No SD");
+    else if (i->timer)
+        snprintf(status,sizeof(status),"%u x %u  |  Timer %u s  |  %s",width,height,i->timer,i->sd ? "SD ready" : "No SD");
     else
-        if (i->timer)
-            snprintf(status, sizeof(status), "%u x %u - %s - Timer %u s", width, height,
-                     i->sd ? "SD ready" : "No SD", i->timer);
-        else
-            snprintf(status, sizeof(status), "%u x %u - %s", width, height,
-                     i->sd ? "SD ready" : "No SD");
-    centered(w/2, 399, status, 18, muted);
+        snprintf(status,sizeof(status),"%u x %u  |  Timer off  |  %s",width,height,i->sd ? "SD ready" : "No SD");
+    status_line(left,384,544,status,i->recording ? magenta : gray,true);
     if (page == SCREEN_NO_SIGNAL || page == SCREEN_WAITING)
-        text(margin, 438, "No capture", 20, muted);
-    else if (!i->sd)
-        text(margin, 438, "Preview only", 20, muted);
-    else {
-        key(margin+13, 431, "A", 0xe2f5fb, cyan, cyan);
-        text(margin+35, 438, page == SCREEN_REVIEW ? "Live view" : i->recording ? "Stop video" :
-             i->video ? "Start video" : "Take photo", 20, ink);
+        text_top(left,419,"No capture",18,gray);
+    else if (!i->sd) text_top(left,419,"Preview only",18,gray);
+    else if (i->countdown) {
+        char count[24];
+        snprintf(count,sizeof(count),"Photo in %u",i->countdown);
+        text_top(left,419,count,18,yellow);
     }
-    home(w/2-58);
-    int bx = w-margin-(i->countdown ? 103 : 91);
-    key(bx+13, 431, "B", 0xf8e3ee, 0xc17fa0, 0x984668);
-    text(bx+35, 438, i->countdown ? "Cancel" : "Menu", 20, 0x984668);
+    else {
+        key(left+14,429,"A",0,cyan,cyan);
+        text_top(left+37,419,page == SCREEN_REVIEW ? "Live view" : i->recording ? "Stop" :
+                 i->video ? "Start video" : "Take photo",18,white);
+    }
+    int bx=left+(i->recording ? 128 : 221);
+    key(bx,429,"B",0,magenta,magenta);
+    text_top(bx+23,419,i->recording ? "Stop + menu" : i->countdown ? "Cancel" : "Menu",18,white);
+    home(left+350,417);
 }
 
 void screen_draw(Screen *s, ScreenPage page, const uint8_t *rgb,
@@ -271,17 +309,17 @@ void screen_draw(Screen *s, ScreenPage page, const uint8_t *rgb,
     unsigned left = (logical_width-360)/2;
     unsigned x0 = (left*s->width/logical_width) & ~1u;
     unsigned x1 = ((left+360)*s->width/logical_width) & ~1u;
-    unsigned y0 = 89*s->height/480, y1 = 359*s->height/480;
+    unsigned y0 = 99*s->height/480, y1 = 369*s->height/480;
     if (x1 <= x0 || y1 <= y0)
         return;
     for (unsigned y = y0; y < y1; ++y) {
         unsigned row = (y-y0)*height/(y1-y0);
         for (unsigned x = x0; x < x1; x += 2) {
             if (info->countdown && page == SCREEN_LIVE) {
-                int ox = (int)(x*logical_width/s->width)-(int)logical_width/2+44;
-                int ox1 = (int)((x+1)*logical_width/s->width)-(int)logical_width/2+44;
-                int oy = (int)(y*480/s->height)-178;
-                if (inside_round(ox, oy, 88, 88, 20) && inside_round(ox1, oy, 88, 88, 20))
+                int ox = (int)(x*logical_width/s->width)-(int)logical_width/2+36;
+                int ox1 = (int)((x+1)*logical_width/s->width)-(int)logical_width/2+36;
+                int oy = (int)(y*480/s->height)-194;
+                if (inside_round(ox, oy, 72, 80, 0) && inside_round(ox1, oy, 72, 80, 0))
                     continue;
             }
             unsigned a = (x-x0)*width/(x1-x0), b = (x+1-x0)*width/(x1-x0);

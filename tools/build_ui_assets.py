@@ -39,14 +39,20 @@ for size in (12, 15, 18, 20, 22, 25, 28, 48):
         w, h = x1-x0, y1-y0
         mask = Image.new('L', (w, h))
         ImageDraw.Draw(mask).text((-x0, -y0), text, font=font, anchor='ls', fill=255)
+        ink = mask.getbbox()
+        if ink:
+            mask = mask.crop(ink)
+            x0 += ink[0]
+            y0 += ink[1]
+            w, h = mask.size
         entries.append(f'{{{len(pixels)},{x0},{y0},{w},{h},{round(font.getlength(text))}}}')
         pixels.extend(mask.tobytes())
     lines.append(f'static const UiGlyph ui_font_{size}[] = {{\n' + ',\n'.join(entries) + '\n};')
 array('ui_font_pixels', pixels)
-icon = Image.open(ROOT / 'assets/wc04-placeholder.png').convert('RGBA')
-icon.thumbnail((130, 144), Image.Resampling.LANCZOS)
-lines.append(f'#define UI_ICON_WIDTH {icon.width}\n#define UI_ICON_HEIGHT {icon.height}')
-array('ui_icon', icon.tobytes())
+home = Image.open(ROOT / 'assets/wii-home-glyph-mask.png').convert('L')
+home.thumbnail((18, 17), Image.Resampling.LANCZOS)
+lines.append(f'#define UI_HOME_WIDTH {home.width}\n#define UI_HOME_HEIGHT {home.height}')
+array('ui_home', home.tobytes())
 bars = Image.open(ROOT / 'assets/color-bars.png').convert('RGB').resize((360, 270), Image.Resampling.NEAREST)
 array('ui_bars', bars.tobytes())
 output.write_text('\n'.join(lines) + '\n')

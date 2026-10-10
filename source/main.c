@@ -811,9 +811,9 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWC04 Camera 0.3.5 UVC EXPERIMENTAL local test - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.1.0 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
-    report("0.3.4 photo/video capture verified on 0c45:6366 at both sizes; 0.3.5 refresh UI awaits hardware testing.\n");
+    report("0.3.4 photo/video capture verified on 0c45:6366 at both sizes; WiiCam 0.1.0 Panel UI awaits hardware testing.\n");
     bool usb_ready = false;
     if (IOS_GetVersion() == 58)
         usb_ready = buffers_ready && USB_Initialize() >= 0;
@@ -822,7 +822,7 @@ int main(void)
     unsigned width = 320, height = 240;
     char status[80];
     snprintf(status, sizeof(status), "%s", !usb_ready ? "Camera needs IOS58 and USB" :
-             mounted ? "Experimental USB support" : "Experimental - SD missing");
+             mounted ? "Open viewfinder to start the camera." : "No SD - preview only");
     bool menu = true, open_live = false;
     ScreenPage idle_page = SCREEN_MENU;
     while (!exit_requested) {
@@ -835,7 +835,7 @@ int main(void)
             break;
         if (idle_page == SCREEN_NO_SIGNAL && (down & WPAD_BUTTON_B)) {
             idle_page = SCREEN_MENU;
-            snprintf(status, sizeof(status), "Ready when you are");
+            snprintf(status, sizeof(status), "Open viewfinder to start the camera.");
             menu = true;
             down = 0;
         }
@@ -876,7 +876,7 @@ int main(void)
                 s32 stopped = WC04_SetAlternate(handle, 0);
                 report("Stop streaming: %ld\n", (long)stopped);
                 snprintf(status, sizeof(status), "%s", result == ISO_CANCELLED ?
-                         "Ready when you are" : result == ISO_TIMEOUT ?
+                         "Open viewfinder to start the camera." : result == ISO_TIMEOUT ?
                          "No frames - A retries, B menu" : "Camera stopped - A retries, B menu");
                 USB_CloseDevice(&handle);
                 if (result == ISO_CANCELLED || result == ISO_RECORD_STOPPED || result == ISO_PHOTO_READY)

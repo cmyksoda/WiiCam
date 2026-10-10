@@ -1,0 +1,18 @@
+{
+  "source": "Nintendo Wii Operations Manual: Channels and Settings",
+  "url": "https://csassets.nintendo.com/noaext/image/private/t_KA_PDF/WiiChEng?_a=DATAg1AAZAA0",
+  "pdf_page": 34,
+  "printed_page": 64,
+  "source_pdf_sha256": "b10ddfad15903c4067e82d7e437017e1ecb576e86aa7fbd780c362f4de0a658b",
+  "extraction": "Original inline HOME glyph after HOME Button in first gray paragraph; PDF rendered at width7200, crop [3068,1884,3132,1948], cyan shape isolated by chroma difference. Shape preserved; neutral/cyan color variants. No font extracted.",
+  "crop_mask_bbox": [
+    13,
+    14,
+    46,
+    45
+  ],
+  "mask_size": [
+    33,
+    31
+  ]
+}

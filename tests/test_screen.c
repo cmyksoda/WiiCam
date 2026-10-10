@@ -102,7 +102,9 @@ static void test_loading_circle(void)
             size_t at = (y*640+x)/2;
             if (first[at] != next[at]) ++changed;
             /* Every animation update stays in the menu's existing button area. */
-            if (x < 336 || x > 366 || y < 326 || y > 355) {
+            if ((x < 48 || x > 592 || y < 106 || y > 196) &&
+                (x < 48 || x > 332 || y < 332 || y > 361) &&
+                (x < 564 || x > 592 || y < 332 || y > 360)) {
                 assert(idle[at] == first[at]);
                 assert(first[at] == next[at]);
             }

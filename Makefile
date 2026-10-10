@@ -14,11 +14,11 @@ LIBS := -ljpeg -lfat -lwiiuse -lbte -logc -lm
 OBJECTS := $(patsubst source/%.c,build/%.o,$(wildcard source/*.c)) build/usb.o
 
 .PHONY: all clean test package
-all: dist/apps/wc04-camera-experimental/boot.dol
+all: dist/apps/wiicam/boot.dol
 
 WC04_FONT ?=
 
-build/ui_assets.h: tools/build_ui_assets.py assets/wc04-placeholder.png assets/color-bars.png | build
+build/ui_assets.h: tools/build_ui_assets.py assets/wii-home-glyph-mask.png assets/color-bars.png | build
 	python3 tools/build_ui_assets.py --font "$(WC04_FONT)"
 
 build/screen.o: build/ui_assets.h
@@ -35,7 +35,7 @@ build:
 build/wc04-camera.elf: $(OBJECTS)
 	$(LD) $^ $(LDFLAGS) $(LIBPATHS) $(LIBS) -o $@
 
-dist/apps/wc04-camera-experimental/boot.dol: build/wc04-camera.elf
+dist/apps/wiicam/boot.dol: build/wc04-camera.elf
 	$(DEVKITPRO)/tools/bin/elf2dol $< $@
 
 HOST_CC ?= cc
@@ -95,7 +95,7 @@ package-local: all
 	python3 tools/package.py --local-test
 
 clean:
-	rm -rf build dist/apps/wc04-camera-experimental/boot.dol
+	rm -rf build dist/apps/wiicam/boot.dol
 
 -include $(OBJECTS:.o=.d)
 

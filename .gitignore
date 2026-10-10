@@ -21,3 +21,5 @@ CLAUDE.md
 # Keep agent notes and Markdown drafts local until rewritten.
 /project-notes/
 *.md
+
+dist/apps/wiicam/boot.dol
