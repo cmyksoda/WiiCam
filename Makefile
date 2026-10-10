@@ -42,6 +42,8 @@ HOST_CC ?= cc
 JPEG_CFLAGS ?=
 JPEG_LIBS ?= -ljpeg
 test: build/ui_assets.h | build
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -pthread -Isource source/refresh_control.c tests/test_refresh_control.c -o build/test_refresh_control
+	./build/test_refresh_control
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_uvc_diagnostics.c -o build/test_uvc_diagnostics
 	./build/test_uvc_diagnostics
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_uvc_generic.c -o build/test_uvc_generic
@@ -99,6 +101,6 @@ clean:
 
 .PHONY: preview-ui
 preview-ui: build/ui_assets.h
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ibuild -Isource source/screen.c tests/render_ui.c -o build/render_ui
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ibuild -Isource source/screen.c source/refresh_control.c tests/render_ui.c -o build/render_ui
 	./build/render_ui
 	python3 tools/preview_ui.py

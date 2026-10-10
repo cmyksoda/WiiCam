@@ -97,6 +97,20 @@ static void key(int x, int y, const char *label, unsigned fill, unsigned line, u
     centered(x, y+7, label, 20, ink);
 }
 
+static void loading_circle(int x, int y, unsigned phase, unsigned color)
+{
+    static const int offsets[8][2] = {
+        {0,-10}, {7,-7}, {10,0}, {7,7}, {0,10}, {-7,7}, {-10,0}, {-7,-7}
+    };
+    for (unsigned n = 0; n < 8; ++n) {
+        unsigned alpha = 255 - 27 * ((phase - n) & 7);
+        for (int dy = -2; dy <= 2; ++dy)
+            for (int dx = -2; dx <= 2; ++dx)
+                if (dx*dx + dy*dy <= 4)
+                    pixel(x + offsets[n][0] + dx, y + offsets[n][1] + dy, color, alpha);
+    }
+}
+
 static void home(int x)
 {
     round_box(x, 419, 68, 25, 12, 0xbcced6);
@@ -159,8 +173,11 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
         char size[40];
         snprintf(size, sizeof(size), "Size: %u x %u", width, height);
         text(left+65, 348, size, 20, ink);
-        key(left+303, 341, "2", 0xffffff, line, ink);
-        text(left+325, 348, "Camera check", 20, ink);
+        if (i->refreshing)
+            loading_circle(left+303, 341, i->refresh_phase, cyan);
+        else
+            key(left+303, 341, "2", 0xffffff, line, ink);
+        text(left+325, 348, "Refresh camera source", 18, ink);
         text(left+30, 378, i->video ? "+ Mode: Video (silent)" : "+ Mode: Photo", 15, muted);
         char timer[40];
         if (i->video)
@@ -231,10 +248,11 @@ void screen_draw(Screen *s, ScreenPage page, const uint8_t *rgb,
         return;
     logical_width = s->widescreen ? 854 : 640;
     char key_string[256];
-    snprintf(key_string, sizeof(key_string), "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u:%s",
+    snprintf(key_string, sizeof(key_string), "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u:%s",
              page, width, height, s->width, s->height, logical_width,
              info->sd, info->video, info->recording, info->shutter, info->timer,
-             info->countdown, info->seconds, info->status ? info->status : "");
+             info->countdown, info->seconds, info->refreshing, info->refresh_phase,
+             info->status ? info->status : "");
     if (strcmp(cached_key, key_string)) {
         compose(page, width, height, info);
         for (unsigned y = 0; y < s->height; ++y)

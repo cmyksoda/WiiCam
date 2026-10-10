@@ -28,6 +28,7 @@
 #include "recorder.h"
 #include "storage.h"
 #include "camera.h"
+#include "refresh_control.h"
 
 #define FRAME_TIMEOUT_SECONDS 10
 #define CONFIG_CAPACITY CAMERA_CONFIG_CAPACITY
@@ -244,6 +245,68 @@ static bool find_camera(s32 *handle, unsigned width, unsigned height, UvcMode *m
     report("Descriptor default interval %lu; other-camera operation is unverified.\n",
            (unsigned long)mode->interval);
     return true;
+}
+
+typedef struct {
+    RefreshControl control;
+    unsigned width, height;
+} RefreshJob;
+
+static void *refresh_worker(void *context)
+{
+    RefreshJob *job = context;
+    s32 handle;
+    UvcMode mode;
+    bool found = find_camera(&handle, job->width, job->height, &mode);
+    if (found)
+        USB_CloseDevice(&handle);
+    refresh_control_complete(&job->control, found);
+    return NULL;
+}
+
+static void refresh_camera(unsigned width, unsigned height, char *status, size_t capacity)
+{
+    RefreshJob job = {.width = width, .height = height};
+    refresh_control_init(&job.control);
+    ScreenInfo info = screen_info;
+    info.sd = mounted;
+    info.refreshing = true;
+    info.refresh_phase = 0;
+    info.status = status;
+    refresh_status(status, capacity, REFRESH_BUSY, width, height);
+    /* Present the loading circle before any potentially blocking USB call. */
+    draw_screen_info(SCREEN_MENU, NULL, width, height, &info);
+    lwp_t worker;
+    if (LWP_CreateThread(&worker, refresh_worker, &job, worker_stack,
+                         sizeof(worker_stack), 60) < 0) {
+        snprintf(status, capacity, "Refresh unavailable - press 2 to retry");
+        draw_screen(SCREEN_MENU, NULL, width, height, status);
+        return;
+    }
+    RefreshResult result = REFRESH_BUSY, previous = REFRESH_BUSY;
+    while (result == REFRESH_BUSY || result == REFRESH_CANCELLING) {
+        uint32_t down = buttons();
+        result = refresh_control_poll(&job.control, exit_requested || (down & WPAD_BUTTON_B));
+        if (result != REFRESH_BUSY && result != REFRESH_CANCELLING)
+            break;
+        unsigned phase = (unsigned)(ticks_to_millisecs(gettime()) / 100) & 7;
+        if (phase != info.refresh_phase || result != previous) {
+            info.refresh_phase = phase;
+            refresh_status(status, capacity, result, width, height);
+            draw_screen_info(SCREEN_MENU, NULL, width, height, &info);
+        }
+        previous = result;
+        VIDEO_WaitVSync();
+    }
+    /* B/HOME defer cleanup until the IOS call returns; never kill a USB owner.
+     * Navigation/repeated refresh presses were consumed, not queued for replay. */
+    LWP_JoinThread(worker, NULL);
+    refresh_status(status, capacity, result, width, height);
+    report("Refresh camera source %ux%u (descriptors only): %s; stream not started.\n",
+           width, height, result == REFRESH_CANCELLED ? "cancelled" :
+           result == REFRESH_FOUND ? "mode found" : "no supported mode found");
+    if (!exit_requested)
+        draw_screen(SCREEN_MENU, NULL, width, height, status);
 }
 
 typedef struct {
@@ -748,9 +811,9 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWC04 Camera 0.3.4 UVC EXPERIMENTAL local test - IOS %u\n", IOS_GetVersion());
+    report("\nWC04 Camera 0.3.5 UVC EXPERIMENTAL local test - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
-    report("0.3.2 photo/video capture verified on 0c45:6366 at 320x240; this diagnostic build awaits hardware testing.\n");
+    report("0.3.4 photo/video capture verified on 0c45:6366 at both sizes; 0.3.5 refresh UI awaits hardware testing.\n");
     bool usb_ready = false;
     if (IOS_GetVersion() == 58)
         usb_ready = buffers_ready && USB_Initialize() >= 0;
@@ -787,11 +850,18 @@ int main(void)
         if (idle_page == SCREEN_MENU && (down & WPAD_BUTTON_1)) {
             width = width == 320 ? 640 : 320;
             height = width == 320 ? 240 : 480;
+            snprintf(status, sizeof(status), "%ux%u selected - 2 refreshes camera source", width, height);
             menu = true;
         }
         if (usb_ready && (open_live || (down & (WPAD_BUTTON_A | WPAD_BUTTON_B | WPAD_BUTTON_2)))) {
             bool scanning = !open_live && !(down & (WPAD_BUTTON_A | WPAD_BUTTON_B));
             open_live = false;
+            if (scanning) {
+                refresh_camera(width, height, status, sizeof(status));
+                idle_page = SCREEN_MENU;
+                menu = false;
+                continue;
+            }
             draw_screen(SCREEN_WAITING, NULL, width, height, "CONNECTING CAMERA");
             s32 handle;
             idle_page = SCREEN_NO_SIGNAL;
@@ -800,19 +870,14 @@ int main(void)
             UvcMode mode;
             if (find_camera(&handle, width, height, &mode)) {
                 UvcAlternate alt;
-                if (scanning)
-                    idle_page = SCREEN_MENU;
                 IsoStop result = ISO_SUBMIT_FAILED;
-                snprintf(status, sizeof(status), "Descriptors supported - stream untested");
-                if (!scanning) {
-                    if (negotiate(handle, &mode, &alt))
-                        result = receive_photo(handle, &mode, &alt);
-                    s32 stopped = WC04_SetAlternate(handle, 0);
-                    report("Stop streaming: %ld\n", (long)stopped);
-                    snprintf(status, sizeof(status), "%s", result == ISO_CANCELLED ?
-                             "Ready when you are" : result == ISO_TIMEOUT ?
-                             "No frames - A retries, B menu" : "Camera stopped - A retries, B menu");
-                }
+                if (negotiate(handle, &mode, &alt))
+                    result = receive_photo(handle, &mode, &alt);
+                s32 stopped = WC04_SetAlternate(handle, 0);
+                report("Stop streaming: %ld\n", (long)stopped);
+                snprintf(status, sizeof(status), "%s", result == ISO_CANCELLED ?
+                         "Ready when you are" : result == ISO_TIMEOUT ?
+                         "No frames - A retries, B menu" : "Camera stopped - A retries, B menu");
                 USB_CloseDevice(&handle);
                 if (result == ISO_CANCELLED || result == ISO_RECORD_STOPPED || result == ISO_PHOTO_READY)
                     idle_page = SCREEN_MENU;

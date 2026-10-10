@@ -12,8 +12,8 @@ typedef struct {
 typedef enum { SCREEN_MENU, SCREEN_WAITING, SCREEN_LIVE, SCREEN_REVIEW, SCREEN_NO_SIGNAL } ScreenPage;
 typedef struct {
     const char *status;
-    bool sd, video, recording, shutter;
-    unsigned timer, countdown, seconds;
+    bool sd, video, recording, shutter, refreshing;
+    unsigned timer, countdown, seconds, refresh_phase;
 } ScreenInfo;
 
 /* One native-endian word becomes Y0 Cb Y1 Cr on the Wii's big-endian CPU. */

@@ -80,8 +80,44 @@ static void render(unsigned width, unsigned height, unsigned stride, bool wide,
     free(allocation);
 }
 
+static void test_loading_circle(void)
+{
+    const size_t count = 640*480/2;
+    uint32_t *idle = malloc(count*sizeof(*idle));
+    uint32_t *first = malloc(count*sizeof(*first));
+    uint32_t *next = malloc(count*sizeof(*next));
+    assert(idle && first && next);
+    Screen screen = {idle, 640, 480, 640, false};
+    ScreenInfo info = {.sd=true, .status="Refreshing camera source - B cancels"};
+    screen_draw(&screen, SCREEN_MENU, NULL, 640, 480, &info);
+    info.refreshing = true;
+    screen.pixels = first;
+    screen_draw(&screen, SCREEN_MENU, NULL, 640, 480, &info);
+    info.refresh_phase = 3;
+    screen.pixels = next;
+    screen_draw(&screen, SCREEN_MENU, NULL, 640, 480, &info);
+    unsigned changed = 0;
+    for (unsigned y = 0; y < 480; ++y) {
+        for (unsigned x = 0; x < 640; x += 2) {
+            size_t at = (y*640+x)/2;
+            if (first[at] != next[at]) ++changed;
+            /* Every animation update stays in the menu's existing button area. */
+            if (x < 336 || x > 366 || y < 326 || y > 355) {
+                assert(idle[at] == first[at]);
+                assert(first[at] == next[at]);
+            }
+        }
+    }
+    assert(changed > 20);
+    info.refreshing = false;
+    screen_draw(&screen, SCREEN_MENU, NULL, 640, 480, &info);
+    for (size_t n = 0; n < count; ++n) assert(next[n] == idle[n]);
+    free(idle); free(first); free(next);
+}
+
 int main(void)
 {
+    test_loading_circle();
     assert(screen_pair(bars[7], bars[7]) == 0x10801080);
     assert(screen_pair(bars[0], bars[0]) == 0xeb80eb80);
     assert(screen_pair(bars[5], bars[5]) == 0x525a52f0);
@@ -91,5 +127,5 @@ int main(void)
         render(640, 574, 672, false, 640, 480, page);
         render(640, 480, 640, true, 640, 480, page);
     }
-    puts("PASS: YCbCr reference colors, pair ordering, scaling, PAL, widescreen, framebuffer bounds");
+    puts("PASS: YCbCr reference colors, pair ordering, scaling, PAL, widescreen, framebuffer bounds, menu-only loading animation/cache reset");
 }

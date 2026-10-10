@@ -1,25 +1,30 @@
-WC04 Camera 0.3.4 USB EXPERIMENTAL - PRIVATE LOCAL TEST ONLY
+WC04 Camera 0.3.5 USB EXPERIMENTAL - PRIVATE LOCAL TEST ONLY
 
 Copy apps/wc04-camera-experimental to the SD card's apps directory.
 Replace the existing experimental folder's contents with this version; keep the
-baseline apps/wc04-camera folder and earlier ZIPs. Confirm 0.3.4 in HBC; keep the working 0.3.2 ZIP.
-This build handles the observed 1-7 trailing zero bytes only after FF D9 on
-an eight-byte-aligned assembled JPEG with FF D8 and valid UVC framing. The
-normalized length reaches the unchanged full JPEG decoder and AVI writer.
-Malformed/error/truncated/oversized frames still fail; no arbitrary tail trim.
-Shared frame capacity is 615424 bytes (614400 + 1024), covering the observed
-614989-byte descriptor. This clears that descriptor gate but does not prove
-640x480 negotiation/streaming, higher frame rate, or phone playback support.
-After stopping, logs include normalized frame/byte counts, existing rejection
-counters and up to four rejected boundary samples. No per-frame disk logging.
+baseline apps/wc04-camera folder and earlier ZIPs. Confirm 0.3.5 in HBC; keep the working 0.3.2 ZIP.
+0.3.5 changes only the menu refresh flow. Press 2: Refresh camera source.
+The existing menu stays visible with an animated loading circle while a worker
+reads descriptors. It does not start a preview or claim streaming was tested.
+A supported result names the selected MJPEG size; A opens the viewfinder.
+A missing/unsupported mode result suggests connecting a camera and pressing 2.
+Changing size clears the previous result. Repeated presses and navigation are
+consumed while refreshing. B requests cancellation; HOME requests exit. Both
+wait for pending USB work to return and the worker to close its handle before
+continuing. A stuck IOS call can still delay cancellation/exit; the app does not
+force-kill USB work. No camera/firmware configuration changes are introduced.
 
-Short later test: with the same camera/setup, run 320x240 Photo view for about
-10 seconds and save one photo. Reopen in Video mode and record about 10 seconds,
-stopping with A or B. Then select 640x480, run camera check (2), and try a short
-preview/photo and video only if a live picture appears. Stop on failure; exit
-with HOME. Return the appended sd:/wc04-camera/session.log with the 0.3.4 banner,
-plus new photo/AVI files if saved. Note lag/cutouts and which size worked.
-Keep existing media and both 0.3.2/0.3.3 ZIPs for comparison.
+The padding fix, shared 615424-byte cap, capture, recording, timers and USB
+negotiation from physically tested 0.3.4 remain. The separate design mockups
+have not been implemented: existing light Pearl styling and assets remain.
+
+Short later test: keep the tested 0.3.4 ZIP. Confirm 0.3.5 in HBC. Press 2 at
+both sizes and verify the loading circle and readable result stay on the menu.
+Try repeated 2 and B while refreshing; verify no surprise viewfinder/recording.
+Try HOME during refresh; it should exit once USB work returns. On another run,
+refresh without a camera, reconnect and refresh again. A should still open the
+viewfinder; save a still and short video at each supported size as a smoke test.
+Return the appended session.log and describe any spinner or cancellation issue.
 
 Requires Wii Remote, HBC under IOS58, writable FAT SD for saving.
 
@@ -32,12 +37,12 @@ No actual speed is inferred from the USB version. Full-speed operation, hubs,
 vWii and other configurations are unverified. No general compatibility guarantee.
 Newer UVC 1.1/1.5 controls, bulk, YUYV, interlaced modes, proprietary protocols,
 audio, multiple configurations and automatic reconnect are unsupported.
-Camera check reads descriptors only; supported descriptors do not prove video.
+Refresh reads descriptors only; supported descriptors do not prove video.
 The default frame interval is used; there is no guessed frame rate or fallback.
 No configuration changes, device firmware, custom IOS or system modifications.
 Insert SD before launch. The app never installs/reloads IOS or writes NAND.
 
-Menu: A opens live view; 1 changes resolution; 2 checks the camera.
+Menu: A opens live view; 1 changes resolution; 2 refreshes camera source.
 + switches Photo / Video. Left/right selects timer Off / 3 / 5 / 10 seconds.
 Photo: A captures or starts countdown; B cancels countdown, otherwise menu.
 Review: A returns to live, B returns to menu.
@@ -60,13 +65,13 @@ No decoded frame for 1 second shows full SMPTE bars; 10 seconds stops the stream
 Timer or pending shutter is canceled by lost signal. If USB drain waits, unplug the camera.
 A wedged IOS or SD operation can still block; do not remove SD while saving.
 
-This 0.3.4 experimental build is host-tested and compiled, NOT physically verified.
-Jaxi's 0.3.2 log/media confirmed two 320x240 photos and an 11.112-second, 44-frame
-silent AVI on 0c45:6366 under IOS58. She reported Photo Channel playback, lag,
-cutouts, higher-size failure and phone playback failure. Camera model and console
-variant remain unknown. Those results do not certify this experimental build.
-The 0.3.3 log confirmed zero padding in four rejected samples and a 614989-byte
-descriptor request. These fixes still require later physical validation.
+This 0.3.5 UI update is host-tested and compiled, NOT physically verified.
+Jaxi physically tested 0.3.4 on 0c45:6366 under IOS58: photos and silent video
+at both sizes. Its log records 26.77 fps for the 320x240 test clip and 14.01 fps
+for 640x480, with zero boundary/decoder rejects in 12 capture runs. These are
+observed sampled rates, not promises. Camera model and console variant remain
+unknown. Some early setup errors recovered on later attempts; their cause is
+unproven. New media were not independently decoded in that log-only review.
 
 Temporary webcam art: Giuseppe Ramos (stockgiu) / Vecteezy.com.
 https://www.vecteezy.com/vector-art/5252064-webcam-device-technology
