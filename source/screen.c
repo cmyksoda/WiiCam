@@ -248,6 +248,7 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
                           : i->microphone            ? "Mic test"
                           : page == SCREEN_WAITING   ? "Please wait"
                           : i->recording             ? "Recording"
+                          : i->audio                 ? "Video + audio"
                           : i->video                 ? "Video"
                                                      : "Photo";
     unsigned accent = i->recording ? magenta : cyan;
@@ -255,7 +256,7 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
              page == SCREEN_MENU        ? gray
              : page == SCREEN_NO_SIGNAL ? yellow
                                         : accent);
-    text_top(right - text_right_edge("v0.1.2", 15), 424, "v0.1.2", 15, gray);
+    text_top(right - text_right_edge("v0.2.0", 15), 424, "v0.2.0", 15, gray);
     if (page == SCREEN_MENU) {
         unsigned action_fill = i->refreshing ? line : cyan;
         unsigned action_ink = i->refreshing ? 0x777777 : 0;
@@ -268,7 +269,12 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
         round_box(left + 362, 237, 1, 59, 0, line);
         key(left + 14, 250, "+", 0, magenta, magenta);
         text_center_y(left + 39, 250, "Mode", 18, gray);
-        text_top(left, 277, i->microphone ? "Mic test" : i->video ? "Video" : "Photo", 22, white);
+        text_top(left, 277,
+                 i->microphone ? "Mic test"
+                 : i->audio    ? "Video + audio"
+                 : i->video    ? "Video"
+                               : "Photo",
+                 22, white);
         if (!i->microphone) key(left + 206, 250, "1", 0, yellow, yellow);
         text_center_y(left + (i->microphone ? 194 : 232), 250, i->microphone ? "Audio" : "Size", 18,
                       gray);
@@ -330,16 +336,16 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
         snprintf(status, sizeof(status), "%s",
                  i->recording ? "Signal lost - B stops recording" : "Waiting for camera signal");
     else if (i->recording)
-        snprintf(status, sizeof(status), "REC %02u:%02u / 01:00  |  Silent video", i->seconds / 60,
-                 i->seconds % 60);
+        snprintf(status, sizeof(status), "REC %02u:%02u / 01:00  |  %s", i->seconds / 60,
+                 i->seconds % 60, i->audio ? "16 kHz mono" : "Silent video");
     else if (i->countdown)
         snprintf(status, sizeof(status), "%u x %u  |  Timer armed  |  %s", width, height,
                  i->sd ? "SD ready" : "No SD");
     else if (i->shutter)
         snprintf(status, sizeof(status), "Taking photo...");
     else if (i->video)
-        snprintf(status, sizeof(status), "%u x %u  |  Silent video  |  %s", width, height,
-                 i->sd ? "SD ready" : "No SD");
+        snprintf(status, sizeof(status), "%u x %u  |  %s  |  %s", width, height,
+                 i->audio ? "Video + audio" : "Silent video", i->sd ? "SD ready" : "No SD");
     else if (i->timer)
         snprintf(status, sizeof(status), "%u x %u  |  Timer %u s  |  %s", width, height, i->timer,
                  i->sd ? "SD ready" : "No SD");
@@ -378,11 +384,11 @@ void screen_draw(Screen *s, ScreenPage page, const uint8_t *rgb, unsigned width,
         return;
     logical_width = s->widescreen ? 854 : 640;
     char key_string[256];
-    snprintf(key_string, sizeof(key_string), "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u:%s",
-             page, width, height, s->width, s->height, logical_width, info->sd, info->video,
-             info->recording, info->shutter, info->timer, info->countdown, info->seconds,
-             info->refreshing, info->refresh_phase, info->microphone,
-             info->status ? info->status : "");
+    snprintf(key_string, sizeof(key_string),
+             "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u:%s", page, width, height, s->width,
+             s->height, logical_width, info->sd, info->video, info->recording, info->shutter,
+             info->timer, info->countdown, info->seconds, info->refreshing, info->refresh_phase,
+             info->microphone, info->audio, info->status ? info->status : "");
     if (strcmp(cached_key, key_string)) {
         compose(page, width, height, info);
         for (unsigned y = 0; y < s->height; ++y)

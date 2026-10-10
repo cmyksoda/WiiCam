@@ -12,6 +12,7 @@ void preview_init(Preview *p, uint8_t *jpeg, size_t capacity)
     p->capacity = capacity;
     p->length = 0;
     p->save = false;
+    p->audio_position = 0;
 }
 
 void preview_shutter(Preview *p)
@@ -21,11 +22,17 @@ void preview_shutter(Preview *p)
 
 bool preview_offer(Preview *p, const uint8_t *jpeg, size_t length)
 {
+    return preview_offer_at(p, jpeg, length, 0);
+}
+
+bool preview_offer_at(Preview *p, const uint8_t *jpeg, size_t length, unsigned position)
+{
     if (!length || length > p->capacity
         || atomic_load_explicit(&p->state, memory_order_acquire) != PREVIEW_EMPTY)
         return false;
     memcpy(p->jpeg, jpeg, length);
     p->length = length;
+    p->audio_position = position;
     p->save = atomic_load_explicit(&p->shutter, memory_order_acquire);
     atomic_store_explicit(&p->state, PREVIEW_FRAME, memory_order_release);
     return true;

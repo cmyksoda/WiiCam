@@ -42,6 +42,8 @@ HOST_CC ?= cc
 JPEG_CFLAGS ?=
 JPEG_LIBS ?= -ljpeg
 test: build/ui_assets.h | build
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -pthread -Isource source/audio_stream.c source/av_avi.c source/av_recorder.c source/storage.c tests/test_av.c -o build/test_av
+	./build/test_av
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c source/microphone.c tests/test_microphone.c -o build/test_microphone
 	./build/test_microphone
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c tests/test_uac.c -o build/test_uac
@@ -119,3 +121,9 @@ test-export: test-recording
 test-modes: build/ui_assets.h | build
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Ibuild -Isource source/uvc.c source/photo.c source/avi.c source/screen.c tests/test_video_modes.c $(JPEG_LIBS) -o build/test_video_modes
 	./build/test_video_modes
+
+.PHONY: test-av-media
+test-av-media: | build
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Isource source/photo.c source/av_avi.c tests/test_av_media.c $(JPEG_LIBS) -o build/test_av_media
+	./build/test_av_media
+	python3 tools/check_av.py

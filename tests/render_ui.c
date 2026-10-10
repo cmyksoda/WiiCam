@@ -62,6 +62,16 @@ static void refresh(const char *name, RefreshResult result, unsigned phase, bool
 
 int main(void)
 {
+    render("av-menu", SCREEN_MENU, (ScreenInfo){.sd = true, .video = true, .audio = true}, false);
+    render("av-live", SCREEN_LIVE, (ScreenInfo){.sd = true, .video = true, .audio = true}, false);
+    render("av-recording", SCREEN_LIVE,
+           (ScreenInfo){.sd = true, .video = true, .audio = true, .recording = true, .seconds = 15},
+           false);
+    render("av-menu-wide", SCREEN_MENU, (ScreenInfo){.sd = true, .video = true, .audio = true},
+           true);
+    render("av-recording-wide", SCREEN_LIVE,
+           (ScreenInfo){.sd = true, .video = true, .audio = true, .recording = true, .seconds = 15},
+           true);
     render("menu", SCREEN_MENU, (ScreenInfo){.sd = true}, false);
     render("no-signal", SCREEN_NO_SIGNAL, (ScreenInfo){.sd = true}, false);
     render("no-signal-wide", SCREEN_NO_SIGNAL, (ScreenInfo){.sd = true}, true);

@@ -30,6 +30,7 @@
 #include "camera.h"
 #include "refresh_control.h"
 #include "microphone.h"
+#include "av_recorder.h"
 
 #define FRAME_TIMEOUT_SECONDS 10
 #define CONFIG_CAPACITY CAMERA_CONFIG_CAPACITY
@@ -39,6 +40,8 @@ static uint8_t *config;
 static uint8_t *probe;
 static uint8_t *iso_data;
 static uint16_t *iso_sizes;
+static uint8_t *audio_iso_data;
+static uint16_t *audio_iso_sizes;
 static uint8_t frame_data[WC04_FRAME_CAPACITY];
 static uint8_t rgb[WC04_RGB_CAPACITY];
 static uint8_t decode_rgb[WC04_RGB_CAPACITY];
@@ -55,6 +58,28 @@ static uint8_t worker_stack[64 * 1024] ATTRIBUTE_ALIGN(32);
 static GXRModeObj *video;
 static ScreenInfo screen_info;
 static Recorder recording;
+static AvRecorder av_recording;
+static uint8_t av_jpeg[WC04_FRAME_CAPACITY];
+static uint8_t audio_stack[32 * 1024] ATTRIBUTE_ALIGN(32);
+
+typedef struct {
+    s32 handle;
+    UacMode mode;
+    AudioStream stream;
+    IsoQueue queue;
+    lwp_t thread;
+    atomic_bool stop, done;
+    atomic_uint last_ms;
+    uint64_t start;
+    IsoStop reason;
+    int failure, cancel_result;
+    bool opened, running;
+} AvCapture;
+
+static AvCapture av_audio;
+static bool av_audio_start(s32 handle, const UvcMode *mode);
+static void av_audio_stop(void);
+static void av_audio_close(void);
 
 s32 WC04_SetAlternate(s32 device_id, u8 alternate);
 s32 WC04_CancelIso(s32 device_id, u8 endpoint);
@@ -90,8 +115,8 @@ static void draw_screen(ScreenPage page, const uint8_t *pixels, unsigned width, 
 
 static bool allocate_usb_buffers(void)
 {
-    const size_t bytes = CONFIG_CAPACITY + 32 + ISO_QUEUE_DEPTH * ISO_DATA_BYTES
-                         + ISO_QUEUE_DEPTH * ISO_PACKETS * sizeof(uint16_t);
+    const size_t bytes = CONFIG_CAPACITY + 32 + 2 * ISO_QUEUE_DEPTH * ISO_DATA_BYTES
+                         + 2 * ISO_QUEUE_DEPTH * ISO_PACKETS * sizeof(uint16_t);
     uintptr_t high = (uintptr_t)SYS_GetArena2Hi() & ~(uintptr_t)31;
     uintptr_t low = (uintptr_t)SYS_GetArena2Lo();
     if (high < low || high - low < bytes) return false;
@@ -101,6 +126,8 @@ static bool allocate_usb_buffers(void)
     probe = config + CONFIG_CAPACITY;
     iso_data = probe + 32;
     iso_sizes = (uint16_t *)(iso_data + ISO_QUEUE_DEPTH * ISO_DATA_BYTES);
+    audio_iso_data = (uint8_t *)(iso_sizes + ISO_QUEUE_DEPTH * ISO_PACKETS);
+    audio_iso_sizes = (uint16_t *)(audio_iso_data + ISO_QUEUE_DEPTH * ISO_DATA_BYTES);
     return true;
 }
 
@@ -413,7 +440,8 @@ typedef struct {
     CaptureControl control;
     atomic_uint countdown;
     RecordControl record_control;
-    bool video_mode;
+    bool video_mode, audio_mode;
+    unsigned audio_end;
 } Capture;
 
 static void *preview_worker(void *context)
@@ -438,25 +466,57 @@ static void *preview_worker(void *context)
                 unsigned state =
                     atomic_load_explicit(&capture->record_control.state, memory_order_acquire);
                 if (record_control_begin(&capture->record_control)) {
-                    bool ready =
-                        ensure_directory("sd:/wc04-camera/videos")
-                        && recorder_start(&recording, "sd:/wc04-camera/videos",
-                                          capture->mode->width, capture->mode->height, elapsed);
-                    if (!ready) recording.failed = true;
+                    bool ready = ensure_directory("sd:/wc04-camera/videos");
+                    if (ready && capture->audio_mode)
+                        ready = av_recorder_start(&av_recording, "sd:/wc04-camera/videos",
+                                                  capture->mode->width, capture->mode->height,
+                                                  capture->preview.jpeg, capture->preview.length);
+                    else if (ready)
+                        ready =
+                            recorder_start(&recording, "sd:/wc04-camera/videos",
+                                           capture->mode->width, capture->mode->height, elapsed);
+                    if (!ready) {
+                        if (capture->audio_mode)
+                            av_recording.failed = true;
+                        else
+                            recording.failed = true;
+                    }
                     record_control_started(&capture->record_control, ready, elapsed);
                     state = atomic_load(&capture->record_control.state);
                 }
-                if (state == RECORD_ACTIVE
-                    && !recorder_frame(&recording, capture->preview.jpeg, capture->preview.length,
-                                       elapsed))
-                    record_control_result(&capture->record_control,
-                                          recording.limited ? RECORD_LIMIT : RECORD_FAILED);
+                if (state == RECORD_ACTIVE) {
+                    bool ok = capture->audio_mode
+                                  ? av_recorder_frame(&av_recording, capture->preview.jpeg,
+                                                      capture->preview.length,
+                                                      capture->preview.audio_position)
+                                  : recorder_frame(&recording, capture->preview.jpeg,
+                                                   capture->preview.length, elapsed);
+                    if (!ok)
+                        record_control_result(
+                            &capture->record_control,
+                            (capture->audio_mode ? av_recording.limited : recording.limited)
+                                ? RECORD_LIMIT
+                                : RECORD_FAILED);
+                }
                 uint64_t write_time = gettime() - write_start;
                 if (state != RECORD_READY && write_time > capture->max_video_write_time)
                     capture->max_video_write_time = write_time;
             } else
                 ++capture->rejected;
             preview_finish(&capture->preview, decoded);
+        }
+        if (capture->audio_mode) {
+            unsigned state = atomic_load(&capture->record_control.state);
+            if (state == RECORD_ACTIVE) {
+                uint64_t write_start = gettime();
+                if (!av_recorder_pump(&av_recording, audio_stream_position(&av_audio.stream)))
+                    record_control_result(&capture->record_control,
+                                          av_recording.limited ? RECORD_LIMIT : RECORD_FAILED);
+                uint64_t write_time = gettime() - write_start;
+                if (write_time > capture->max_video_write_time)
+                    capture->max_video_write_time = write_time;
+            } else if (!av_recording.active)
+                audio_stream_discard(&av_audio.stream);
         }
         if (atomic_load_explicit(&capture->worker_stop, memory_order_acquire)) break;
         uint64_t now = gettime();
@@ -477,6 +537,8 @@ static void *preview_worker(void *context)
                                : 0;
             if (state == RECORD_REQUESTED || state == RECORD_STARTING)
                 info.status = "Starting video...";
+            else if (capture->audio_mode && state == RECORD_STOPPING)
+                info.status = "Stopping USB - unplug camera if stuck";
             draw_screen_info(signal ? SCREEN_LIVE : SCREEN_NO_SIGNAL, signal ? rgb : NULL,
                              capture->mode->width, capture->mode->height, &info);
             last_draw = now;
@@ -485,6 +547,8 @@ static void *preview_worker(void *context)
         if (!have_frame) usleep(1000);
     }
     /* Only this worker writes the video; finalize before its join returns. */
+    if (capture->audio_mode && av_recording.active)
+        av_recorder_stop(&av_recording, capture->audio_end, audio_stream_valid(&av_audio.stream));
     if (recording.active)
         recorder_stop(&recording, atomic_load(&capture->record_control.stopped_ms));
     return NULL;
@@ -526,6 +590,7 @@ static IsoStop poll_capture(void *context)
     unsigned age = elapsed >= last ? elapsed - last : 0;
     bool signal = last && age < 1000;
     if (capture->video_mode) {
+        if (capture->audio_mode && atomic_load(&av_audio.stream.failed)) return ISO_RECORD_STOPPED;
         if (exit_requested) return ISO_EXIT;
         if (down & WPAD_BUTTON_B) return ISO_CANCELLED;
         unsigned state = atomic_load(&capture->record_control.state);
@@ -566,6 +631,10 @@ static void stopping_capture(void *context, IsoStop reason, int failure)
     Capture *capture = context;
     record_control_stop(&capture->record_control,
                         (unsigned)ticks_to_millisecs(gettime() - capture->start));
+    if (capture->audio_mode) {
+        capture->audio_end = audio_stream_position(&av_audio.stream);
+        av_audio_stop();
+    }
     atomic_store_explicit(&capture->worker_stop, true, memory_order_release);
     LWP_JoinThread(capture->worker, NULL);
     draw_screen(SCREEN_WAITING, reason == ISO_PHOTO_READY ? rgb : NULL, capture->mode->width,
@@ -645,7 +714,10 @@ static bool consume_capture(void *context, const IsoSlot *slot)
         }
         /* IOS retains requested strides; returned sizes are actual lengths. */
         if (uvc_packet(frame, packet, length)) {
-            if (!preview_offer(&capture->preview, frame->data, frame->size)) ++capture->skipped;
+            if (!preview_offer_at(&capture->preview, frame->data, frame->size,
+                                  capture->audio_mode ? audio_stream_position(&av_audio.stream)
+                                                      : 0))
+                ++capture->skipped;
         }
     }
     return false;
@@ -657,7 +729,8 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
                        .mode = mode,
                        .alt = alt,
                        .min_length = ISO_MAX_PAYLOAD,
-                       .video_mode = screen_info.video};
+                       .video_mode = screen_info.video,
+                       .audio_mode = screen_info.audio};
     uvc_frame_init(&capture.frame, frame_data, sizeof(frame_data));
     IsoQueue queue;
     iso_queue_init(&queue, iso_data, iso_sizes, alt->capacity);
@@ -677,6 +750,7 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
     record_control_init(&capture.record_control);
     capture_control_init(&capture.control, screen_info.timer);
     recorder_init(&recording);
+    av_recorder_init(&av_recording, &av_audio.stream, av_jpeg);
     draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height, "WAITING FOR FIRST FRAME");
     capture.start = gettime();
     if (LWP_CreateThread(&capture.worker, preview_worker, &capture, worker_stack,
@@ -686,6 +760,7 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
         return ISO_SUBMIT_FAILED;
     }
     IsoStop stop = iso_queue_run(&queue, &hooks, &capture);
+    if (capture.audio_mode && atomic_load(&av_audio.stream.failed)) av_recording.failed = true;
     const UvcFrame *frame = &capture.frame;
     const UvcStats *stats = &frame->stats;
     report("Capture ended: %s; elapsed %llu ms (including drain).\n", stop_description(stop),
@@ -759,7 +834,17 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
            (unsigned long long)ticks_to_microsecs(capture.max_decode_time));
     if (atomic_load(&capture.preview.shutter))
         report("Shutter pressed at viewfinder +%u ms\n", capture.shutter_ms);
-    if (capture.video_mode) {
+    if (capture.audio_mode) {
+        report("A/V frames=%u PCM_samples=%u duration_ms=%u repeated=%u source_frames=%u "
+               "bytes=%u saved=%u failed=%u limit=%u longest_write_us=%llu\n",
+               av_recording.avi.frames, av_recording.avi.frames * AUDIO_BLOCK_BYTES / 2,
+               av_recording.avi.frames * AUDIO_FRAME_MS, av_recording.repeated,
+               av_recording.frames_received, av_recording.avi.bytes, av_recording.saved,
+               av_recording.failed, av_recording.limited,
+               (unsigned long long)ticks_to_microsecs(capture.max_video_write_time));
+        if (av_recording.saved)
+            report("A/V saved: %s; MJPEG 10 fps / PCM16 mono 16000 Hz.\n", av_recording.path);
+    } else if (capture.video_mode) {
         report("Longest video create/write %llu us; busy preview frames skipped %u\n",
                (unsigned long long)ticks_to_microsecs(capture.max_video_write_time),
                capture.skipped);
@@ -1003,6 +1088,132 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
     free(samples);
 }
 
+static int av_audio_submit(void *context, IsoSlot *slot)
+{
+    const AvCapture *audio = context;
+    return USB_ReadIsoMsgAsync(audio->handle, audio->mode.endpoint, ISO_PACKETS, slot->sizes,
+                               slot->data, iso_finished, slot);
+}
+
+static bool av_audio_consume(void *context, const IsoSlot *slot)
+{
+    AvCapture *audio = context;
+    unsigned now = (unsigned)ticks_to_millisecs(gettime() - audio->start);
+    unsigned before = audio_stream_position(&audio->stream);
+    for (unsigned n = 0; n < ISO_PACKETS; ++n)
+        if (!audio_stream_packet(&audio->stream, slot->data + n * audio->mode.packet_capacity,
+                                 slot->sizes[n], audio->mode.packet_capacity, now))
+            return true;
+    if (audio_stream_position(&audio->stream) != before) atomic_store(&audio->last_ms, now);
+    return false;
+}
+
+static IsoStop av_audio_poll(void *context)
+{
+    AvCapture *audio = context;
+    if (atomic_load(&audio->stop)) return ISO_CANCELLED;
+    unsigned now = (unsigned)ticks_to_millisecs(gettime() - audio->start);
+    if (now - atomic_load(&audio->last_ms) >= 500) return ISO_TIMEOUT;
+    return ISO_RUNNING;
+}
+
+static void av_audio_stopping(void *context, IsoStop reason, int failure)
+{
+    AvCapture *audio = context;
+    audio->reason = reason;
+    audio->failure = failure;
+    if (reason != ISO_CANCELLED) atomic_store(&audio->stream.failed, true);
+}
+
+static void av_audio_cancel(void *context)
+{
+    AvCapture *audio = context;
+    audio->cancel_result = WC04_CancelIso(audio->handle, audio->mode.endpoint);
+}
+
+static void *av_audio_worker(void *context)
+{
+    AvCapture *audio = context;
+    const IsoHooks hooks = {.submit = av_audio_submit,
+                            .consume = av_audio_consume,
+                            .poll = av_audio_poll,
+                            .idle = idle_capture,
+                            .stopping = av_audio_stopping,
+                            .cancel = av_audio_cancel};
+    iso_queue_run(&audio->queue, &hooks, audio);
+    atomic_store(&audio->done, true);
+    return NULL;
+}
+
+static bool av_audio_start(s32 handle, const UvcMode *mode)
+{
+    memset(&av_audio, 0, sizeof(av_audio));
+    atomic_init(&av_audio.stop, false);
+    atomic_init(&av_audio.done, false);
+    atomic_init(&av_audio.last_ms, 0);
+    MicTest test = {0};
+    if (!mic_open(handle, mode, &test)) return false;
+    av_audio.handle = test.handle;
+    av_audio.mode = test.mode;
+    av_audio.opened = true;
+    MicRateResult rate = MIC_RATE_FAILED;
+    if (WC04_SetAlternate(test.handle, 0) >= 0
+        && WC04_SetAlternate(test.handle, test.mode.alternate) >= 0)
+        rate = microphone_set_rate(&test.entry, &test.mode, mic_control, &test, probe);
+    audio_stream_init(&av_audio.stream, rate);
+    if (rate == MIC_RATE_FAILED || exit_requested) {
+        av_audio_close();
+        return false;
+    }
+    iso_queue_init(&av_audio.queue, audio_iso_data, audio_iso_sizes, test.mode.packet_capacity);
+    av_audio.start = gettime();
+    if (LWP_CreateThread(&av_audio.thread, av_audio_worker, &av_audio, audio_stack,
+                         sizeof(audio_stack), 80)
+        < 0) {
+        av_audio_close();
+        return false;
+    }
+    av_audio.running = true;
+    report("A/V audio interface=%u endpoint=%02x cap=%u interval=%u rate_readback=%u; "
+           "independent 4x16 USB queue / 65536-byte PCM ring.\n",
+           test.mode.interface, test.mode.endpoint, test.mode.packet_capacity, test.mode.interval,
+           rate);
+    return true;
+}
+
+static void av_audio_stop(void)
+{
+    if (!av_audio.running) return;
+    atomic_store(&av_audio.stop, true);
+    LWP_JoinThread(av_audio.thread, NULL);
+    av_audio.running = false;
+}
+
+static void av_audio_close(void)
+{
+    if (!av_audio.opened) return;
+    av_audio_stop();
+    const AudioStream *stream = &av_audio.stream;
+    report("A/V audio stop reason=%u failure=%d cancel=%d submitted=%u consumed=%u drained=%u "
+           "bytes=%llu packets=%u empty=%u lengths=%u..%u rejected=%u peak=%u fatal=%u "
+           "span_ms=%llu rate_valid=%u\n",
+           av_audio.reason, av_audio.failure, av_audio.cancel_result, av_audio.queue.submitted,
+           av_audio.queue.consumed, av_audio.queue.drained, (unsigned long long)stream->bytes,
+           stream->packets, stream->empty, stream->smallest, stream->largest, stream->rejected,
+           stream->peak, atomic_load(&stream->failed),
+           (unsigned long long)(stream->last_ms - stream->first_ms), audio_stream_valid(stream));
+    for (unsigned n = 0; n < stream->rejected && n < MIC_MAX_REJECTED_PACKETS; ++n)
+        report("A/V rejected audio packet index=%u length=%u cap=%u; never copied.\n",
+               stream->rejected_indices[n], stream->rejected_lengths[n],
+               av_audio.mode.packet_capacity);
+    for (unsigned n = 0; n < av_audio.queue.drained; ++n)
+        report("A/V audio drained result=%d\n", av_audio.queue.drain_results[n]);
+    s32 result = WC04_SetAlternate(av_audio.handle, 0);
+    report("A/V audio idle alternate=%ld\n", (long)result);
+    USB_CloseDevice(&av_audio.handle);
+    av_audio.opened = false;
+}
+
 static bool save_photo(unsigned width, unsigned height, char path[80])
 {
     if (!mounted || !ensure_directory("sd:/DCIM") || !ensure_directory("sd:/DCIM/100WC04")) {
@@ -1039,10 +1250,10 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.1.2 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.0 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
-        "Bounded sizes and explicit 5-second microphone test enabled. Video recording is silent.\n");
+        "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");
     bool usb_ready = false;
     if (IOS_GetVersion() == 58)
         usb_ready = buffers_ready && USB_Initialize() >= 0;
@@ -1072,10 +1283,13 @@ int main(void)
         if (idle_page == SCREEN_MENU && (down & WPAD_BUTTON_PLUS)) {
             if (screen_info.microphone)
                 screen_info.microphone = false;
-            else if (screen_info.video) {
+            else if (screen_info.audio) {
+                screen_info.audio = false;
                 screen_info.video = false;
                 screen_info.microphone = true;
-            } else
+            } else if (screen_info.video)
+                screen_info.audio = true;
+            else
                 screen_info.video = true;
             snprintf(status, sizeof(status), "%s",
                      screen_info.microphone ? "A records a 5-second microphone test"
@@ -1115,12 +1329,19 @@ int main(void)
             s32 handle;
             idle_page = SCREEN_NO_SIGNAL;
             recorder_init(&recording);
+            av_recorder_init(&av_recording, &av_audio.stream, av_jpeg);
             snprintf(status, sizeof(status), "Camera not found - A retries, B menu");
             UvcMode mode;
             if (find_camera(&handle, width, height, &mode)) {
                 UvcAlternate alt;
                 IsoStop result = ISO_SUBMIT_FAILED;
-                if (negotiate(handle, &mode, &alt)) result = receive_photo(handle, &mode, &alt);
+                if (negotiate(handle, &mode, &alt)) {
+                    if (!screen_info.audio || av_audio_start(handle, &mode))
+                        result = receive_photo(handle, &mode, &alt);
+                    else
+                        av_recording.failed = true;
+                    if (screen_info.audio) av_audio_close();
+                }
                 s32 stopped = WC04_SetAlternate(handle, 0);
                 report("Stop streaming: %ld\n", (long)stopped);
                 snprintf(status, sizeof(status), "%s",
@@ -1131,7 +1352,15 @@ int main(void)
                 if (result == ISO_CANCELLED || result == ISO_RECORD_STOPPED
                     || result == ISO_PHOTO_READY)
                     idle_page = SCREEN_MENU;
-                if (screen_info.video) {
+                if (screen_info.audio) {
+                    if (av_recording.saved)
+                        snprintf(status, sizeof(status), "Saved %s",
+                                 strrchr(av_recording.path, '/') + 1);
+                    else
+                        snprintf(status, sizeof(status), "%s",
+                                 av_recording.failed ? "Audio/video not saved - see log"
+                                                     : "No audio/video recorded");
+                } else if (screen_info.video) {
                     if (recording.saved)
                         snprintf(status, sizeof(status), "Saved %s",
                                  strrchr(recording.path, '/') + 1);
