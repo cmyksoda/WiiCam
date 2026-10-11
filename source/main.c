@@ -73,7 +73,7 @@ typedef struct {
     lwp_t thread;
     atomic_bool stop, done;
     atomic_uint last_ms, phase;
-    unsigned first_ms, first_phase, worker_ms, rate_to_queue_ms;
+    unsigned first_ms, first_phase, worker_ms, setup_to_queue_ms, setup_rejected;
     unsigned initial_submit_ms[ISO_QUEUE_DEPTH], initial_complete_ms[ISO_QUEUE_DEPTH];
     int initial_results[ISO_QUEUE_DEPTH];
     bool initial_completed[ISO_QUEUE_DEPTH];
@@ -1163,6 +1163,10 @@ static bool av_audio_consume(void *context, const IsoSlot *slot)
             audio->rejected_ms[rejected] = now;
             audio->rejected_phase[rejected] = phase;
         }
+        if (audio->setup_rejected + audio->stream.rejected > MIC_MAX_REJECTED_PACKETS) {
+            atomic_store(&audio->stream.failed, true);
+            ok = false;
+        }
         if (!ok) return true;
     }
     if (audio_stream_position(&audio->stream) != before) atomic_store(&audio->last_ms, now);
@@ -1223,6 +1227,36 @@ static bool av_audio_wait_rate(uint64_t configured)
     return !exit_requested;
 }
 
+static bool av_audio_queue_start(MicRateResult rate, unsigned phase, uint64_t ready)
+{
+    if (!av_audio.opened || av_audio.running || rate == MIC_RATE_FAILED
+        || atomic_load(&av_audio.stream.failed))
+        return false;
+    unsigned setup_rejected = av_audio.setup_rejected + av_audio.stream.rejected;
+    s32 handle = av_audio.handle;
+    UacMode mode = av_audio.mode;
+    /* A stopped worker has joined and returned every buffer before this reset. */
+    memset(&av_audio, 0, sizeof(av_audio));
+    av_audio.handle = handle;
+    av_audio.mode = mode;
+    av_audio.opened = true;
+    av_audio.setup_rejected = setup_rejected;
+    atomic_init(&av_audio.stop, false);
+    atomic_init(&av_audio.done, false);
+    atomic_init(&av_audio.last_ms, 0);
+    atomic_init(&av_audio.phase, phase);
+    audio_stream_init(&av_audio.stream, rate);
+    iso_queue_init(&av_audio.queue, audio_iso_data, audio_iso_sizes, mode.packet_capacity);
+    av_audio.start = gettime();
+    av_audio.setup_to_queue_ms = (unsigned)ticks_to_millisecs(av_audio.start - ready);
+    if (LWP_CreateThread(&av_audio.thread, av_audio_worker, &av_audio, audio_stack,
+                         sizeof(audio_stack), 80)
+        < 0)
+        return false;
+    av_audio.running = true;
+    return true;
+}
+
 static bool av_audio_start(s32 handle, const UvcMode *mode)
 {
     memset(&av_audio, 0, sizeof(av_audio));
@@ -1247,16 +1281,10 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
         av_audio_close();
         return false;
     }
-    iso_queue_init(&av_audio.queue, audio_iso_data, audio_iso_sizes, test.mode.packet_capacity);
-    av_audio.start = gettime();
-    av_audio.rate_to_queue_ms = (unsigned)ticks_to_millisecs(av_audio.start - configured);
-    if (LWP_CreateThread(&av_audio.thread, av_audio_worker, &av_audio, audio_stack,
-                         sizeof(audio_stack), 80)
-        < 0) {
+    if (!av_audio_queue_start(rate, AV_AUDIO_ONLY, configured)) {
         av_audio_close();
         return false;
     }
-    av_audio.running = true;
     report("A/V audio interface=%u endpoint=%02x cap=%u interval=%u rate_readback=%u; "
            "independent 4x16 USB queue / 65536-byte PCM ring.\n",
            test.mode.interface, test.mode.endpoint, test.mode.packet_capacity, test.mode.interval,
@@ -1279,15 +1307,16 @@ static void av_audio_close(void)
     const AudioStream *stream = &av_audio.stream;
     report("A/V audio stop reason=%u failure=%d cancel=%d submitted=%u consumed=%u drained=%u "
            "bytes=%llu packets=%u empty=%u lengths=%u..%u rejected=%u peak=%u fatal=%u "
-           "span_ms=%llu rate_valid=%u\n",
+           "span_ms=%llu rate_valid=%u setup_rejected=%u\n",
            av_audio.reason, av_audio.failure, av_audio.cancel_result, av_audio.queue.submitted,
            av_audio.queue.consumed, av_audio.queue.drained, (unsigned long long)stream->bytes,
            stream->packets, stream->empty, stream->smallest, stream->largest, stream->rejected,
            stream->peak, atomic_load(&stream->failed),
-           (unsigned long long)(stream->last_ms - stream->first_ms), audio_stream_valid(stream));
-    report("A/V initial USB timing: rate_to_queue_ms=%u worker_ms=%u data=%p sizes=%p; "
+           (unsigned long long)(stream->last_ms - stream->first_ms), audio_stream_valid(stream),
+           av_audio.setup_rejected);
+    report("A/V initial USB timing: setup_to_queue_ms=%u worker_ms=%u data=%p sizes=%p; "
            "request offsets from audio start.\n",
-           av_audio.rate_to_queue_ms, av_audio.worker_ms, (void *)audio_iso_data,
+           av_audio.setup_to_queue_ms, av_audio.worker_ms, (void *)audio_iso_data,
            (void *)audio_iso_sizes);
     for (unsigned n = 0; n < av_audio.queue.submitted && n < ISO_QUEUE_DEPTH; ++n)
         report("A/V initial request=%u submit_ms=%u callback_ms=%u completed=%u result=%d\n", n,
@@ -1429,19 +1458,39 @@ static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt, bo
         }
     }
     if (result == ISO_RUNNING) {
-        unsigned before = audio_stream_position(&av_audio.stream);
         atomic_store(&av_audio.phase, AV_VIDEO_ENABLING);
-        report("A/V enabling video after microphone reception: PCM_bytes=%u\n", before);
-        *video_changed = true;
-        if (!activate_camera(handle, alt))
-            result = ISO_SUBMIT_FAILED;
-        else if (atomic_load(&av_audio.stream.failed))
+        av_audio_stop();
+        report(
+            "A/V audio paused before video enable: reason=%u failure=%d cancel=%d "
+            "PCM_bytes=%u submitted=%u consumed=%u drained=%u fatal=%u rejected=%u; worker joined.\n",
+            av_audio.reason, av_audio.failure, av_audio.cancel_result,
+            audio_stream_position(&av_audio.stream), av_audio.queue.submitted,
+            av_audio.queue.consumed, av_audio.queue.drained, atomic_load(&av_audio.stream.failed),
+            av_audio.stream.rejected);
+        if (atomic_load(&av_audio.stream.failed))
             result = ISO_COMPLETION_FAILED;
         else {
-            atomic_store(&av_audio.phase, AV_VIDEO_ACTIVE);
-            report("A/V video active: PCM_bytes=%u; starting video queue.\n",
-                   audio_stream_position(&av_audio.stream));
-            result = receive_photo(handle, mode, alt);
+            MicRateResult rate = av_audio.stream.rate;
+            uint64_t enabling = gettime();
+            *video_changed = true;
+            bool active = activate_camera(handle, alt);
+            report("A/V video enable completed: success=%u elapsed_ms=%llu; audio queue paused.\n",
+                   active, (unsigned long long)ticks_to_millisecs(gettime() - enabling));
+            if (!active)
+                result = ISO_SUBMIT_FAILED;
+            else if (atomic_load(&av_audio.stream.failed))
+                result = ISO_COMPLETION_FAILED;
+            else if (!av_audio_queue_start(rate, AV_VIDEO_ACTIVE, gettime()))
+                result = ISO_SUBMIT_FAILED;
+            else {
+                report("A/V audio queue restarted after video enable; fresh PCM required, "
+                       "audio interface/rate unchanged.\n");
+                result = av_audio_prime(0);
+                if (result == ISO_RUNNING) {
+                    report("A/V video active and fresh audio ready; starting video queue.\n");
+                    result = receive_photo(handle, mode, alt);
+                }
+            }
         }
     }
     if (result == ISO_SUBMIT_FAILED || result == ISO_COMPLETION_FAILED || result == ISO_TIMEOUT)
@@ -1498,7 +1547,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.8 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.9 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");

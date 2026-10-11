@@ -48,11 +48,21 @@ enum {
     ACTIVE_IDLE_SUCCESS,
     ACTIVE_IDLE_AUDIO_FAIL,
     ACTIVE_IDLE_READBACK_FAIL,
+    PAUSE_FAIL,
+    RESTART_FAIL,
+    EMPTY_AFTER_RESTART,
+    PARTIAL_AFTER_RESTART,
+    INVALID_AFTER_RESTART,
+    STALL_AFTER_RESTART,
+    SLOW_ENABLE,
+    B_AFTER_RESTART,
+    HOME_AFTER_RESTART,
     SCENARIOS
 };
 
 static unsigned scenario, starts, enables, captures, closes, probes, idles;
-static uint64_t clock_ms, controls_ms;
+static uint64_t clock_ms, controls_ms, restarted_ms;
+static unsigned pauses, restarts, pre_pause_rejected;
 static bool exit_requested, silent, settling_test;
 static char events[32];
 static unsigned event_count;
@@ -68,6 +78,13 @@ static int repeat_raw, configuration_raw;
 static uint8_t repeat_byte, configuration_byte;
 static bool corrupt_guards, corrupt_probe;
 static char diagnostic_log[1024];
+static uint8_t audio_data[ISO_QUEUE_DEPTH * ISO_DATA_BYTES], audio_stack[32 * 1024];
+static uint16_t audio_sizes[ISO_QUEUE_DEPTH * ISO_PACKETS];
+static uint8_t *audio_iso_data = audio_data;
+static uint16_t *audio_iso_sizes = audio_sizes;
+static void *av_audio_worker(void *context);
+static int LWP_CreateThread(lwp_t *thread, void *(*entry)(void *), void *context, void *stack,
+                            unsigned size, unsigned priority);
 
 static struct {
     bool failed;
@@ -120,10 +137,11 @@ static s32 WC04_SetAlternate(s32 handle, uint8_t alternate)
     ++enables;
     event('V');
     if (!silent) {
-        assert(starts == 1 && av_audio.opened);
+        assert(starts == 1 && av_audio.opened && !av_audio.running && pauses == 1 && !restarts);
         assert(atomic_load(&av_audio.phase) == AV_VIDEO_ENABLING);
         assert(audio_stream_position(&av_audio.stream) >= 2 * AUDIO_BLOCK_BYTES);
         assert(clock_ms >= 200);
+        if (scenario == SLOW_ENABLE) clock_ms += 624;
         if (scenario == FAIL_DURING_ENABLE) atomic_store(&av_audio.stream.failed, true);
     }
     return scenario == ENABLE_FAIL ? -4 : 0;
@@ -222,17 +240,66 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
     if (scenario == AUDIO_OPEN_FAIL || scenario == ACTIVE_IDLE_AUDIO_FAIL) return false;
     audio_stream_init(&av_audio.stream, MIC_RATE_UNREADABLE);
     atomic_init(&av_audio.phase, AV_AUDIO_ONLY);
-    av_audio.opened = true;
+    av_audio.opened = av_audio.running = true;
+    av_audio.handle = 43;
+    av_audio.mode = (UacMode){.interface = 3, .endpoint = 0x84, .packet_capacity = 192};
     av_audio.start = clock_ms;
     if (scenario == EARLY_EXIT) exit_requested = true;
     return true;
+}
+
+static void av_audio_stop(void)
+{
+    assert(av_audio.opened && av_audio.running && !pauses && !enables && !restarts);
+    assert(atomic_load(&av_audio.phase) == AV_VIDEO_ENABLING);
+    av_audio.running = false;
+    av_audio.reason = ISO_CANCELLED;
+    pre_pause_rejected = av_audio.stream.rejected;
+    if (scenario == PAUSE_FAIL) atomic_store(&av_audio.stream.failed, true);
+    ++pauses;
+    event('Q');
+}
+
+static void *av_audio_worker(void *context)
+{
+    (void)context;
+    assert(false);
+    return NULL;
+}
+
+static int LWP_CreateThread(lwp_t *thread, void *(*entry)(void *), void *context, void *stack,
+                            unsigned size, unsigned priority)
+{
+    assert(entry == av_audio_worker && context == &av_audio && stack == audio_stack);
+    assert(size == sizeof(audio_stack) && priority == 80);
+    assert(av_audio.opened && !av_audio.running && pauses == 1 && enables == 1 && !restarts);
+    assert(av_audio.stream.rate == MIC_RATE_UNREADABLE
+           && atomic_load(&av_audio.phase) == AV_VIDEO_ACTIVE);
+    assert(av_audio.start == clock_ms && av_audio.setup_to_queue_ms == 0);
+    assert(av_audio.handle == 43 && av_audio.mode.interface == 3 && av_audio.mode.endpoint == 0x84);
+    assert(!atomic_load(&av_audio.stream.failed) && !audio_stream_position(&av_audio.stream));
+    assert(!av_audio.stream.bytes && !av_audio.stream.packets
+           && av_audio.setup_rejected == pre_pause_rejected);
+    assert(!atomic_load(&av_audio.stop) && !atomic_load(&av_audio.done)
+           && !atomic_load(&av_audio.last_ms));
+    for (unsigned n = 0; n < ISO_QUEUE_DEPTH; ++n) {
+        assert(!av_audio.queue.slots[n].pending && !av_audio.initial_completed[n]);
+        assert(av_audio.queue.slots[n].data == audio_data + n * ISO_DATA_BYTES);
+        assert(av_audio.queue.slots[n].sizes == audio_sizes + n * ISO_PACKETS);
+    }
+    ++restarts;
+    event('R');
+    if (scenario == RESTART_FAIL) return -1;
+    *thread = 1;
+    restarted_ms = clock_ms;
+    return 0;
 }
 
 static void av_audio_close(void)
 {
     assert(av_audio.opened && !closes);
     ++closes;
-    av_audio.opened = false;
+    av_audio.opened = av_audio.running = false;
     event('X');
 }
 
@@ -266,13 +333,13 @@ static void draw_screen(ScreenPage page, const uint8_t *rgb, unsigned width, uns
 
 static uint32_t buttons(void)
 {
-    if (scenario == HOME) exit_requested = true;
-    return scenario == B_CANCEL ? WPAD_BUTTON_B : 0;
+    if (scenario == HOME || (scenario == HOME_AFTER_RESTART && restarts)) exit_requested = true;
+    return scenario == B_CANCEL || (scenario == B_AFTER_RESTART && restarts) ? WPAD_BUTTON_B : 0;
 }
 
 static void usleep(unsigned microseconds)
 {
-    assert(microseconds == 1000 && !enables);
+    assert(microseconds == 1000 && (!enables || restarts));
     ++clock_ms;
     if (settling_test) return;
     uint8_t data[32] = {0};
@@ -280,15 +347,22 @@ static void usleep(unsigned microseconds)
         if (clock_ms == 500) atomic_store(&av_audio.stream.failed, true);
         return;
     }
+    if (scenario == STALL_AFTER_RESTART && restarts) {
+        if (clock_ms - restarted_ms == 500) atomic_store(&av_audio.stream.failed, true);
+        return;
+    }
+    if (scenario == PARTIAL_AFTER_RESTART && restarts && clock_ms - restarted_ms >= 100) return;
     if (scenario == PARTIAL && clock_ms >= 100) return;
     if (scenario == SLOW_VALID && clock_ms % 5) return;
     if (scenario == PARTIAL_AFTER_CONTROLS && probes && clock_ms - controls_ms >= 100) return;
     unsigned length =
-        scenario == EMPTY
+        scenario == EMPTY || (scenario == EMPTY_AFTER_RESTART && restarts)
                 || (probes && (scenario == EMPTY_AFTER_CONTROLS || scenario == CONTROL_PCM_ONLY))
             ? 0
             : sizeof(data);
-    if (scenario == INVALID || (scenario == INVALID_AFTER_CONTROLS && probes)) length = 3;
+    if (scenario == INVALID || (scenario == INVALID_AFTER_CONTROLS && probes)
+        || (scenario == INVALID_AFTER_RESTART && restarts))
+        length = 3;
     if ((scenario == FOUR_REJECTED && clock_ms <= 4) || scenario == FIFTH_REJECTED) length = 4096;
     audio_stream_packet(&av_audio.stream, data, length, 192, clock_ms);
 }
@@ -297,6 +371,9 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
 {
     assert(handle == 42 && mode->width == 320 && alternate->endpoint == 0x81);
     assert(atomic_load(&av_audio.phase) == AV_VIDEO_ACTIVE && enables == 1);
+    assert(restarts == 1 && av_audio.running);
+    assert(audio_stream_position(&av_audio.stream) >= AUDIO_BLOCK_BYTES);
+    assert(clock_ms - restarted_ms >= 100);
     assert(atomic_load(&av_audio.stream.consumed) == audio_stream_position(&av_audio.stream));
     event('C');
     ++captures;
@@ -310,7 +387,8 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
 static void reset(void)
 {
     starts = enables = captures = closes = event_count = probes = idles = 0;
-    clock_ms = controls_ms = 0;
+    clock_ms = controls_ms = restarted_ms = 0;
+    pauses = restarts = pre_pause_rejected = 0;
     exit_requested = silent = idle_unit_test = cleanup_test = settling_test = false;
     cleanup_calls = diagnostic_reads = 0;
     repeat_raw = configuration_raw = 9;
@@ -361,6 +439,15 @@ int main(void)
         [ACTIVE_IDLE_SUCCESS] = ISO_RECORD_STOPPED,
         [ACTIVE_IDLE_AUDIO_FAIL] = ISO_SUBMIT_FAILED,
         [ACTIVE_IDLE_READBACK_FAIL] = ISO_SUBMIT_FAILED,
+        [PAUSE_FAIL] = ISO_COMPLETION_FAILED,
+        [RESTART_FAIL] = ISO_SUBMIT_FAILED,
+        [EMPTY_AFTER_RESTART] = ISO_TIMEOUT,
+        [PARTIAL_AFTER_RESTART] = ISO_TIMEOUT,
+        [INVALID_AFTER_RESTART] = ISO_COMPLETION_FAILED,
+        [STALL_AFTER_RESTART] = ISO_COMPLETION_FAILED,
+        [SLOW_ENABLE] = ISO_RECORD_STOPPED,
+        [B_AFTER_RESTART] = ISO_CANCELLED,
+        [HOME_AFTER_RESTART] = ISO_EXIT,
     };
     _Static_assert(sizeof(expected) / sizeof(expected[0]) == SCENARIOS, "scenario results");
     for (scenario = 0; scenario < SCENARIOS; ++scenario) {
@@ -387,11 +474,16 @@ int main(void)
         bool activated = scenario == SUCCESS || scenario == ENABLE_FAIL
                          || scenario == FAIL_DURING_ENABLE || scenario == FAIL_AFTER_ENABLE
                          || scenario == FOUR_REJECTED || scenario == SLOW_VALID
-                         || scenario == ACTIVE_IDLE_SUCCESS;
+                         || scenario == ACTIVE_IDLE_SUCCESS || scenario >= RESTART_FAIL;
         assert(enables == activated);
-        assert(captures
+        bool recorded = scenario == SUCCESS || scenario == FAIL_AFTER_ENABLE
+                        || scenario == FOUR_REJECTED || scenario == SLOW_VALID
+                        || scenario == ACTIVE_IDLE_SUCCESS || scenario == SLOW_ENABLE;
+        assert(captures == recorded);
+        assert(pauses == (activated || scenario == PAUSE_FAIL));
+        assert(restarts
                == (activated && scenario != ENABLE_FAIL && scenario != FAIL_DURING_ENABLE));
-        if (captures) assert(!strcmp(events, idle_changed ? "IZIAPVCX" : "IAPVCX"));
+        if (captures) assert(!strcmp(events, idle_changed ? "IZIAPQVRCX" : "IAPQVRCX"));
         assert(video_changed == (activated || idle_changed));
         cleanup_test = true;
         stop_video_stream(42, video_changed);
@@ -400,12 +492,17 @@ int main(void)
         if (scenario == EMPTY || scenario == PARTIAL) assert(clock_ms == 1000);
         if (scenario == INVALID || scenario == FIFTH_REJECTED)
             assert(av_audio.stream.rejected == 5 && !audio_stream_position(&av_audio.stream));
-        if (scenario == FOUR_REJECTED) assert(av_audio.stream.rejected == 4 && clock_ms == 204);
-        if (scenario == SLOW_VALID) assert(clock_ms == 1000);
+        if (scenario == FOUR_REJECTED)
+            assert(pre_pause_rejected == 4 && !av_audio.stream.rejected && clock_ms == 304);
+        if (scenario == SLOW_VALID) assert(clock_ms == 1500);
+        if (scenario == SLOW_ENABLE) assert(clock_ms == 924);
+        if (scenario == EMPTY_AFTER_RESTART || scenario == PARTIAL_AFTER_RESTART)
+            assert(clock_ms == 1200);
+        if (scenario == STALL_AFTER_RESTART) assert(clock_ms == 700);
         if (scenario == EMPTY_AFTER_CONTROLS || scenario == PARTIAL_AFTER_CONTROLS
             || scenario == CONTROL_PCM_ONLY)
             assert(clock_ms == 1100);
-        bool negotiated = activated || scenario == PROBE_FAIL
+        bool negotiated = activated || scenario == PAUSE_FAIL || scenario == PROBE_FAIL
                           || (scenario >= FAIL_DURING_CONTROLS && scenario <= CONTROL_PCM_ONLY);
         assert(probes == negotiated);
         if (scenario == INVALID_AFTER_CONTROLS)
@@ -513,5 +610,5 @@ int main(void)
                && !cleanup_calls);
     }
     puts(
-        "PASS: actual startup: 26 readiness/preflight/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 15 checked video-idle cases, 7 diagnostic comparison cases");
+        "PASS: actual startup: 35 readiness/preflight/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 15 checked video-idle cases, 7 diagnostic comparison cases");
 }
