@@ -65,6 +65,15 @@ static uint8_t audio_stack[32 * 1024] ATTRIBUTE_ALIGN(32);
 
 enum { AV_AUDIO_ONLY, AV_VIDEO_PREPARING, AV_VIDEO_PREPARED, AV_VIDEO_ENABLING, AV_VIDEO_ACTIVE };
 
+enum { AV_REJECTION_SAMPLES = MIC_MAX_REJECTED_PACKETS + 1 };
+
+typedef struct {
+    unsigned index, slot, elapsed_ms, phase;
+    int batch_result;
+    unsigned plausible_bytes, invalid_slots, slot_nonzero;
+    uint16_t sizes[ISO_PACKETS];
+} AvRejectedPacket;
+
 typedef struct {
     s32 handle;
     UacMode mode;
@@ -79,8 +88,7 @@ typedef struct {
     bool initial_completed[ISO_QUEUE_DEPTH];
     int first_result;
     uint16_t first_sizes[ISO_PACKETS];
-    unsigned rejected_ms[MIC_MAX_REJECTED_PACKETS];
-    unsigned rejected_phase[MIC_MAX_REJECTED_PACKETS];
+    AvRejectedPacket rejected_packets[AV_REJECTION_SAMPLES];
     uint64_t start;
     IsoStop reason;
     int failure, cancel_result;
@@ -1159,9 +1167,26 @@ static bool av_audio_consume(void *context, const IsoSlot *slot)
         unsigned rejected = audio->stream.rejected;
         bool ok = audio_stream_packet(&audio->stream, slot->data + n * audio->mode.packet_capacity,
                                       slot->sizes[n], audio->mode.packet_capacity, now);
-        if (audio->stream.rejected > rejected && rejected < MIC_MAX_REJECTED_PACKETS) {
-            audio->rejected_ms[rejected] = now;
-            audio->rejected_phase[rejected] = phase;
+        if (audio->stream.rejected > rejected && rejected < AV_REJECTION_SAMPLES) {
+            AvRejectedPacket *sample = &audio->rejected_packets[rejected];
+            *sample =
+                (AvRejectedPacket){.index = audio->stream.packets + audio->stream.empty + rejected,
+                                   .slot = n,
+                                   .elapsed_ms = now,
+                                   .phase = phase,
+                                   .batch_result = slot->result};
+            memcpy(sample->sizes, slot->sizes, sizeof(sample->sizes));
+            for (unsigned i = 0; i < ISO_PACKETS; ++i) {
+                unsigned length = sample->sizes[i];
+                if (length > audio->mode.packet_capacity || (length & 1))
+                    ++sample->invalid_slots;
+                else
+                    sample->plausible_bytes += length;
+            }
+            /* Inspect only the requested slot, irrespective of its invalid returned length. */
+            const uint8_t *data = slot->data + n * audio->mode.packet_capacity;
+            for (unsigned i = 0; i < audio->mode.packet_capacity; ++i)
+                if (data[i]) ++sample->slot_nonzero;
         }
         if (audio->setup_rejected + audio->stream.rejected > MIC_MAX_REJECTED_PACKETS) {
             atomic_store(&audio->stream.failed, true);
@@ -1300,6 +1325,26 @@ static void av_audio_stop(void)
     av_audio.running = false;
 }
 
+static void av_audio_log_rejections(void)
+{
+    unsigned count = av_audio.stream.rejected;
+    if (count > AV_REJECTION_SAMPLES) count = AV_REJECTION_SAMPLES;
+    for (unsigned n = 0; n < count; ++n) {
+        const AvRejectedPacket *sample = &av_audio.rejected_packets[n];
+        report(
+            "A/V rejected audio packet index=%u slot=%u length=%u cap=%u at_ms=%u phase=%u "
+            "batch_result=%d plausible_bytes=%u invalid_slots=%u slot_nonzero=%u; never copied.\n",
+            sample->index, sample->slot, sample->sizes[sample->slot], av_audio.mode.packet_capacity,
+            sample->elapsed_ms, sample->phase, sample->batch_result, sample->plausible_bytes,
+            sample->invalid_slots, sample->slot_nonzero);
+        char line[128];
+        unsigned used = (unsigned)snprintf(line, sizeof(line), "A/V rejected batch sizes (hex):");
+        for (unsigned i = 0; i < ISO_PACKETS; ++i)
+            used += (unsigned)snprintf(line + used, sizeof(line) - used, " %04x", sample->sizes[i]);
+        report("%s\n", line);
+    }
+}
+
 static void av_audio_close(void)
 {
     if (!av_audio.opened) return;
@@ -1331,11 +1376,7 @@ static void av_audio_close(void)
             report("A/V first audio slot=%u returned=%u cap=%u\n", n, av_audio.first_sizes[n],
                    av_audio.mode.packet_capacity);
     }
-    for (unsigned n = 0; n < stream->rejected && n < MIC_MAX_REJECTED_PACKETS; ++n)
-        report(
-            "A/V rejected audio packet index=%u length=%u cap=%u at_ms=%u phase=%u; never copied.\n",
-            stream->rejected_indices[n], stream->rejected_lengths[n], av_audio.mode.packet_capacity,
-            av_audio.rejected_ms[n], av_audio.rejected_phase[n]);
+    av_audio_log_rejections();
     for (unsigned n = 0; n < av_audio.queue.drained; ++n)
         report("A/V audio drained result=%d\n", av_audio.queue.drain_results[n]);
     s32 result = WC04_SetAlternate(av_audio.handle, 0);
@@ -1467,6 +1508,7 @@ static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt, bo
             audio_stream_position(&av_audio.stream), av_audio.queue.submitted,
             av_audio.queue.consumed, av_audio.queue.drained, atomic_load(&av_audio.stream.failed),
             av_audio.stream.rejected);
+        av_audio_log_rejections();
         if (atomic_load(&av_audio.stream.failed))
             result = ISO_COMPLETION_FAILED;
         else {
@@ -1547,7 +1589,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.9 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.10 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");

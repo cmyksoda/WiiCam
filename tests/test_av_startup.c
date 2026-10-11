@@ -78,6 +78,9 @@ static int repeat_raw, configuration_raw;
 static uint8_t repeat_byte, configuration_byte;
 static bool corrupt_guards, corrupt_probe;
 static char diagnostic_log[1024];
+static bool rejection_log_test;
+static char rejection_log[4096];
+static unsigned rejection_log_used;
 static uint8_t audio_data[ISO_QUEUE_DEPTH * ISO_DATA_BYTES], audio_stack[32 * 1024];
 static uint16_t audio_sizes[ISO_QUEUE_DEPTH * ISO_PACKETS];
 static uint8_t *audio_iso_data = audio_data;
@@ -315,6 +318,16 @@ static uint64_t ticks_to_millisecs(uint64_t ticks)
 
 static void report(const char *format, ...)
 {
+    if (rejection_log_test) {
+        assert(!av_audio.running);
+        va_list args;
+        va_start(args, format);
+        int size = vsnprintf(rejection_log + rejection_log_used,
+                             sizeof(rejection_log) - rejection_log_used, format, args);
+        va_end(args);
+        assert(size >= 0 && (unsigned)size < sizeof(rejection_log) - rejection_log_used);
+        rejection_log_used += (unsigned)size;
+    }
     if (strstr(format, "A/V alternate comparison")) {
         va_list args;
         va_start(args, format);
@@ -404,8 +417,100 @@ static void reset(void)
     av_recording.failed = false;
 }
 
+static void test_rejection_diagnostics(void)
+{
+    const unsigned slots[] = {3, 15, 0, 8, 2};
+    const unsigned lengths[] = {4096, 65535, 193, 1, 4096};
+    for (unsigned test = 0; test < 8; ++test) {
+        reset();
+        audio_stream_init(&av_audio.stream, test == 5 ? MIC_RATE_OK : MIC_RATE_UNREADABLE);
+        av_audio.mode.packet_capacity = 192;
+        atomic_init(&av_audio.phase, AV_VIDEO_ACTIVE);
+        atomic_init(&av_audio.last_ms, 0);
+        av_audio.setup_rejected = test == 4 ? 4 : 0;
+        av_audio.running = true;
+        rejection_log_used = 0;
+        rejection_log[0] = 0;
+        unsigned rounds = test == 2 ? 5 : 1;
+        for (unsigned round = 0; round < rounds; ++round) {
+            clock_ms = 19 + 16 * round;
+            memset(audio_data, 0, sizeof(audio_data));
+            for (unsigned n = 0; n < ISO_PACKETS; ++n) {
+                audio_sizes[n] = 32;
+                memset(audio_data + n * 192, 0x20, n + 1);
+            }
+            if (test == 1 || test == 4) audio_sizes[test == 4 ? 0 : 3] = 4096;
+            if (test == 2) audio_sizes[slots[round]] = lengths[round];
+            if (test == 3)
+                for (unsigned n = 0; n < ISO_PACKETS; ++n)
+                    audio_sizes[n] = 4096;
+            if (test == 5 || test == 7) audio_sizes[15] = test == 5 ? 193 : 65535;
+            if (test == 6) {
+                audio_sizes[0] = 0;
+                audio_sizes[3] = 4096;
+                audio_sizes[7] = 1;
+                audio_sizes[12] = 65535;
+            }
+            IsoSlot batch = {.data = audio_data,
+                             .sizes = audio_sizes,
+                             .result = test == 3   ? 0
+                                       : test == 6 ? 384
+                                       : test      ? 480
+                                                   : 512};
+            unsigned before = av_audio.stream.rejected;
+            unsigned index = av_audio.stream.packets + av_audio.stream.empty + before;
+            ++av_audio.queue.consumed;
+            bool stop = av_audio_consume(&av_audio, &batch);
+            assert(stop == ((test == 2 && round == 4) || test == 3 || test == 4 || test == 5));
+            for (unsigned n = before; n < av_audio.stream.rejected; ++n) {
+                const AvRejectedPacket *sample = &av_audio.rejected_packets[n];
+                unsigned slot = test == 1   ? 3
+                                : test == 2 ? slots[round]
+                                : test == 3 ? n
+                                : test == 4 ? 0
+                                : test == 6 ? (unsigned[]){3, 7, 12}[n]
+                                            : 15;
+                assert(sample->index == index + slot && sample->slot == slot);
+                assert(sample->elapsed_ms == clock_ms && sample->phase == AV_VIDEO_ACTIVE);
+                assert(sample->batch_result == batch.result);
+                assert(!memcmp(sample->sizes, audio_sizes, sizeof(sample->sizes)));
+                assert(sample->invalid_slots == (test == 3 ? 16u : test == 6 ? 3u : 1u));
+                assert(sample->plausible_bytes == (test == 3 ? 0u : test == 6 ? 384u : 480u));
+                assert(sample->slot_nonzero == slot + 1);
+            }
+            assert(!rejection_log_used);
+        }
+        assert(av_audio.stream.rejected
+               == (test == 0                ? 0u
+                   : test == 2 || test == 3 ? 5u
+                   : test == 6              ? 3u
+                                            : 1u));
+        assert(av_audio.setup_rejected == (test == 4 ? 4u : 0u));
+        if (test == 3 || test == 4) assert(!audio_stream_position(&av_audio.stream));
+        av_audio.running = false;
+        rejection_log_test = true;
+        av_audio_log_rejections();
+        rejection_log_test = false;
+        unsigned rows = 0;
+        const char *next = rejection_log;
+        while ((next = strstr(next, "A/V rejected batch sizes (hex):"))) {
+            ++rows;
+            ++next;
+        }
+        assert(rows == av_audio.stream.rejected);
+        if (test == 2) assert(strstr(rejection_log, "index=66 slot=2 length=4096"));
+        if (test == 3)
+            assert(strstr(rejection_log, "batch_result=0 plausible_bytes=0 invalid_slots=16"));
+        if (test == 7)
+            assert(strstr(rejection_log, "slot_nonzero=16") && strstr(rejection_log, "ffff"));
+    }
+    puts(
+        "PASS: 8 bounded rejected-batch diagnostic cases, including fifth packet, all-invalid raw0, cumulative budget, odd/oversized lengths, requested-stride reads and deferred logs");
+}
+
 int main(void)
 {
+    test_rejection_diagnostics();
     const UvcMode mode = {.configuration = 1,
                           .interface = 1,
                           .width = 320,
