@@ -45,10 +45,9 @@ enum {
     INVALID_AFTER_CONTROLS,
     CONTROL_PCM_ONLY,
     UNADVERTISED_IDLE,
-    INITIALIZE_IDLE_SUCCESS,
-    ACTIVE_IDLE_SUCCESS,
-    ACTIVE_IDLE_AUDIO_FAIL,
-    ACTIVE_IDLE_READBACK_FAIL,
+    NONZERO_IDLE,
+    UNREADABLE_IDLE,
+    SHORT_IDLE,
     PAUSE_FAIL,
     RESTART_FAIL,
     EMPTY_AFTER_RESTART,
@@ -70,8 +69,8 @@ static unsigned event_count;
 static bool idle_unit_test, cleanup_test;
 static unsigned cleanup_calls;
 static unsigned idle_reads, idle_sets, expected_interface = 1;
-static int idle_raw[2], idle_set_result;
-static uint8_t idle_alternate[2];
+static int idle_raw[1], idle_set_result;
+static uint8_t idle_alternate[1];
 static uint8_t probe[UVC_PROBE_LENGTH];
 static _Alignas(32) uint8_t config[64];
 static unsigned diagnostic_reads;
@@ -129,10 +128,10 @@ static s32 WC04_SetAlternate(s32 handle, uint8_t alternate)
             return 0;
         }
         if (!silent) {
-            assert(scenario >= UNADVERTISED_IDLE && scenario <= ACTIVE_IDLE_READBACK_FAIL);
+            assert(!idle_reads && !diagnostic_reads);
             assert(!starts && !av_audio.opened && !probes && !enables);
             event('Z');
-            return 0;
+            return scenario == IDLE_FAIL ? -4 : 0;
         }
         event('I');
         ++idles;
@@ -158,10 +157,10 @@ static s32 USB_ReadCtrlMsg(s32 handle, uint8_t type, uint8_t request, uint16_t v
     if (data == config || data == config + 32) {
         assert(handle == 42 && !value && length == 1);
         assert(!starts && !av_audio.opened && !probes && !enables && !silent);
-        assert(diagnostic_reads < 4);
+        assert(diagnostic_reads < 2 && idle_sets == 1);
         uint8_t *bytes = data;
         if (data == config) {
-            assert(diagnostic_reads % 2 == 0 && type == 0x81 && request == 10
+            assert(!diagnostic_reads && type == 0x81 && request == 10
                    && index == expected_interface);
             for (unsigned n = 0; n < 32; ++n)
                 assert(bytes[n] == 0xa5);
@@ -171,7 +170,7 @@ static s32 USB_ReadCtrlMsg(s32 handle, uint8_t type, uint8_t request, uint16_t v
             ++diagnostic_reads;
             return repeat_raw;
         }
-        assert(diagnostic_reads % 2 == 1 && type == 0x80 && request == 8 && !index);
+        assert(diagnostic_reads == 1 && type == 0x80 && request == 8 && !index);
         for (unsigned n = 0; n < 32; ++n)
             assert(bytes[n] == 0x5a);
         bytes[0] = configuration_byte;
@@ -182,7 +181,7 @@ static s32 USB_ReadCtrlMsg(s32 handle, uint8_t type, uint8_t request, uint16_t v
     assert(handle == 42 && type == 0x81 && request == 10 && !value);
     assert(index == expected_interface && length == 1 && data == probe);
     if (idle_unit_test) {
-        assert(idle_reads < 2);
+        assert(!idle_reads && idle_sets == 1);
         probe[0] = idle_alternate[idle_reads];
         return idle_raw[idle_reads++];
     }
@@ -190,11 +189,9 @@ static s32 USB_ReadCtrlMsg(s32 handle, uint8_t type, uint8_t request, uint16_t v
     ++idles;
     event('I');
     assert(!starts && !av_audio.opened && !probes && !enables && !silent);
-    probe[0] = scenario == UNADVERTISED_IDLE ? 220 : 0;
-    if (scenario == INITIALIZE_IDLE_SUCCESS && idle_reads == 1) probe[0] = 220;
-    if (scenario >= ACTIVE_IDLE_SUCCESS && scenario <= ACTIVE_IDLE_READBACK_FAIL)
-        probe[0] = idle_reads == 1 || scenario == ACTIVE_IDLE_READBACK_FAIL ? 3 : 0;
-    return scenario == IDLE_FAIL ? -7102 : 9;
+    assert(idle_sets == 1 && idle_reads == 1);
+    probe[0] = scenario == UNADVERTISED_IDLE ? 220 : scenario == NONZERO_IDLE ? 3 : 0;
+    return scenario == UNREADABLE_IDLE ? -7102 : scenario == SHORT_IDLE ? 8 : 9;
 }
 
 static int probe_transfer(void *context, uint8_t request, uint16_t selector, uint8_t *data)
@@ -221,10 +218,7 @@ bool uvc_negotiate(const UvcMode *mode, UvcAlternate *alternate, uint8_t data[UV
     else {
         assert(starts == 1 && av_audio.opened);
         assert(atomic_load(&av_audio.phase) == AV_VIDEO_PREPARING);
-        assert(idles
-                   == (scenario == ACTIVE_IDLE_SUCCESS || scenario == INITIALIZE_IDLE_SUCCESS ? 2u
-                                                                                              : 1u)
-               && clock_ms >= 100);
+        assert(idles == 1 && clock_ms >= 100);
         assert(audio_stream_position(&av_audio.stream) >= AUDIO_BLOCK_BYTES);
         if (scenario == FAIL_DURING_CONTROLS) atomic_store(&av_audio.stream.failed, true);
         if (scenario == CONTROL_PCM_ONLY) {
@@ -242,14 +236,10 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
 {
     assert(handle == 42 && mode->width == 320 && mode->height == 240);
     assert(!enables && !probes);
-    assert(idles
-           == (scenario == ACTIVE_IDLE_SUCCESS || scenario == ACTIVE_IDLE_AUDIO_FAIL
-                       || scenario == INITIALIZE_IDLE_SUCCESS
-                   ? 2u
-                   : 1u));
+    assert(idles == 1 && idle_sets == 1);
     event('A');
     ++starts;
-    if (scenario == AUDIO_OPEN_FAIL || scenario == ACTIVE_IDLE_AUDIO_FAIL) return false;
+    if (scenario == AUDIO_OPEN_FAIL) return false;
     audio_stream_init(&av_audio.stream, MIC_RATE_UNREADABLE);
     atomic_init(&av_audio.phase, AV_AUDIO_ONLY);
     av_audio.opened = av_audio.running = true;
@@ -550,10 +540,9 @@ int main(void)
         [INVALID_AFTER_CONTROLS] = ISO_COMPLETION_FAILED,
         [CONTROL_PCM_ONLY] = ISO_TIMEOUT,
         [UNADVERTISED_IDLE] = ISO_SUBMIT_FAILED,
-        [INITIALIZE_IDLE_SUCCESS] = ISO_RECORD_STOPPED,
-        [ACTIVE_IDLE_SUCCESS] = ISO_RECORD_STOPPED,
-        [ACTIVE_IDLE_AUDIO_FAIL] = ISO_SUBMIT_FAILED,
-        [ACTIVE_IDLE_READBACK_FAIL] = ISO_SUBMIT_FAILED,
+        [NONZERO_IDLE] = ISO_SUBMIT_FAILED,
+        [UNREADABLE_IDLE] = ISO_SUBMIT_FAILED,
+        [SHORT_IDLE] = ISO_SUBMIT_FAILED,
         [PAUSE_FAIL] = ISO_COMPLETION_FAILED,
         [RESTART_FAIL] = ISO_SUBMIT_FAILED,
         [EMPTY_AFTER_RESTART] = ISO_TIMEOUT,
@@ -574,16 +563,13 @@ int main(void)
                == (expected[scenario] == ISO_SUBMIT_FAILED
                    || expected[scenario] == ISO_COMPLETION_FAILED
                    || expected[scenario] == ISO_TIMEOUT));
-        assert(diagnostic_reads
-               == (scenario == UNADVERTISED_IDLE         ? 4u
-                   : scenario == INITIALIZE_IDLE_SUCCESS ? 2u
-                                                         : 0u));
-        bool idle_changed = scenario >= UNADVERTISED_IDLE && scenario <= ACTIVE_IDLE_READBACK_FAIL;
-        assert(!av_audio.opened && idle_sets == idle_changed);
-        if (scenario == IDLE_FAIL || scenario == UNADVERTISED_IDLE
-            || scenario == ACTIVE_IDLE_READBACK_FAIL) {
+        assert(diagnostic_reads == (scenario == UNADVERTISED_IDLE ? 2u : 0u));
+        assert(!av_audio.opened && idle_sets == 1);
+        assert(idle_reads == (scenario == IDLE_FAIL ? 0u : 1u));
+        if (scenario == IDLE_FAIL || scenario == UNADVERTISED_IDLE || scenario == NONZERO_IDLE
+            || scenario == UNREADABLE_IDLE || scenario == SHORT_IDLE) {
             assert(!starts && !enables && !captures && !closes);
-        } else if (scenario == AUDIO_OPEN_FAIL || scenario == ACTIVE_IDLE_AUDIO_FAIL) {
+        } else if (scenario == AUDIO_OPEN_FAIL) {
             assert(starts == 1 && !enables && !captures && !closes);
         } else {
             assert(starts == 1 && closes == 1);
@@ -591,23 +577,21 @@ int main(void)
         bool activated = scenario == SUCCESS || scenario == ENABLE_FAIL
                          || scenario == FAIL_DURING_ENABLE || scenario == FAIL_AFTER_ENABLE
                          || scenario == FOUR_REJECTED || scenario == SLOW_VALID
-                         || scenario == ACTIVE_IDLE_SUCCESS || scenario == INITIALIZE_IDLE_SUCCESS
                          || scenario >= RESTART_FAIL;
         assert(enables == activated);
         bool recorded = scenario == SUCCESS || scenario == FAIL_AFTER_ENABLE
                         || scenario == FOUR_REJECTED || scenario == SLOW_VALID
-                        || scenario == ACTIVE_IDLE_SUCCESS || scenario == INITIALIZE_IDLE_SUCCESS
                         || scenario == SLOW_ENABLE;
         assert(captures == recorded);
         assert(pauses == (activated || scenario == PAUSE_FAIL));
         assert(restarts
                == (activated && scenario != ENABLE_FAIL && scenario != FAIL_DURING_ENABLE));
-        if (captures) assert(!strcmp(events, idle_changed ? "IZIAPQVRCX" : "IAPQVRCX"));
-        assert(video_changed == (activated || idle_changed));
+        if (captures) assert(!strcmp(events, "ZIAPQVRCX"));
+        assert(video_changed);
         cleanup_test = true;
         stop_video_stream(42, video_changed);
         assert(cleanup_calls == video_changed);
-        assert(idle_sets == (unsigned)idle_changed + (unsigned)video_changed);
+        assert(idle_sets == 2);
         if (scenario == EMPTY || scenario == PARTIAL) assert(clock_ms == 1000);
         if (scenario == INVALID || scenario == FIFTH_REJECTED)
             assert(av_audio.stream.rejected == 5 && !audio_stream_position(&av_audio.stream));
@@ -652,61 +636,45 @@ int main(void)
     }
 
     const struct {
-        int first_raw, second_raw, set_result;
-        uint8_t first_alternate, second_alternate;
+        int raw, set_result;
+        uint8_t alternate;
         bool expected;
-        unsigned reads, sets;
     } idle_cases[] = {
-        {9, 9, 0, 0, 0, true, 1, 0},      {1, 9, 0, 0, 0, false, 1, 0},
-        {-7102, 9, 0, 0, 0, false, 1, 0}, {0, 9, 0, 0, 0, false, 1, 0},
-        {8, 9, 0, 0, 0, false, 1, 0},     {10, 9, 0, 0, 0, false, 1, 0},
-        {9, 9, 0, 3, 0, true, 2, 1},      {9, 9, 0, 3, 3, false, 2, 1},
-        {9, 8, 0, 3, 0, false, 2, 1},     {9, 9, -4, 3, 0, false, 1, 1},
-        {9, -7102, 0, 3, 0, false, 2, 1}, {9, 9, 0, 255, 0, false, 1, 0},
-        {9, 9, 0, 220, 0, true, 2, 1},    {9, 9, 0, 3, 220, false, 2, 1},
-        {9, 9, 0, 220, 220, false, 2, 1}, {9, 9, 0, 220, 3, false, 2, 1},
-        {9, 9, -4, 220, 0, false, 1, 1},  {9, -7102, 0, 220, 0, false, 2, 1},
-        {9, 8, 0, 220, 0, false, 2, 1},   {9, 1, 0, 220, 0, false, 2, 1},
-        {9, 10, 0, 220, 0, false, 2, 1},  {9, 9, 0, 255, 0, true, 2, 1},
+        {9, 0, 0, true},    {1, 0, 0, false},  {-7102, 0, 0, false}, {0, 0, 0, false},
+        {8, 0, 0, false},   {10, 0, 0, false}, {9, 0, 3, false},     {9, 0, 220, false},
+        {9, 0, 255, false}, {9, -4, 0, false}, {9, 1, 0, true},
     };
 
     for (unsigned n = 0; n < sizeof(idle_cases) / sizeof(idle_cases[0]); ++n) {
         reset();
         idle_unit_test = true;
-        idle_raw[0] = idle_cases[n].first_raw;
-        idle_raw[1] = idle_cases[n].second_raw;
-        idle_alternate[0] = idle_cases[n].first_alternate;
-        idle_alternate[1] = idle_cases[n].second_alternate;
+        idle_raw[0] = idle_cases[n].raw;
+        idle_alternate[0] = idle_cases[n].alternate;
         idle_set_result = idle_cases[n].set_result;
         UvcMode checked_mode = mode;
-        if (n == 11 || n == 21) expected_interface = checked_mode.interface = 7;
-        if (n == 21) repeat_byte = 255;
+        if (n == 8 || n == 10) expected_interface = checked_mode.interface = 7;
         bool video_changed = false;
         assert(av_video_idle(42, &checked_mode, &video_changed) == idle_cases[n].expected);
-        assert(video_changed == (idle_cases[n].sets != 0));
-        assert(diagnostic_reads == (n == 14 ? 4u : n >= 11 ? 2u : 0u));
-        assert(idle_reads == idle_cases[n].reads && idle_sets == idle_cases[n].sets);
+        assert(video_changed && idle_sets == 1);
+        assert(diagnostic_reads == (n == 7 || n == 8 ? 2u : 0u));
+        assert(idle_reads == (idle_cases[n].set_result < 0 ? 0u : 1u));
         assert(!starts && !probes && !enables && !captures && !closes);
     }
-    reset();
-    idle_unit_test = true;
-    idle_raw[0] = 9;
-    idle_alternate[0] = 3;
-    UvcMode oversized = mode;
-    oversized.alt_count = WC04_MAX_ALTS + 1;
-    bool video_changed = false;
-    assert(!av_video_idle(42, &oversized, &video_changed));
-    assert(idle_reads == 1 && !idle_sets && !video_changed);
-
-    reset();
-    idle_unit_test = true;
-    idle_raw[0] = 9;
-    idle_alternate[0] = 220;
-    UvcMode unconfigured = mode;
-    configuration_byte = unconfigured.configuration = 0;
-    video_changed = false;
-    assert(!av_video_idle(42, &unconfigured, &video_changed));
-    assert(idle_reads == 1 && diagnostic_reads == 2 && !idle_sets && !video_changed);
+    for (unsigned n = 0; n < 3; ++n) {
+        reset();
+        idle_unit_test = true;
+        UvcMode invalid = mode;
+        if (n == 0) invalid.alt_count = WC04_MAX_ALTS + 1;
+        if (n == 1) invalid.alt_count = 0;
+        if (n == 2) invalid.configuration = 0;
+        bool video_changed = false;
+        assert(!av_video_idle(42, &invalid, &video_changed));
+        assert(!idle_sets && !idle_reads && !diagnostic_reads && !video_changed);
+        idle_unit_test = false;
+        cleanup_test = true;
+        stop_video_stream(42, video_changed);
+        assert(!idle_sets && !cleanup_calls);
+    }
 
     const struct {
         int repeat_raw, config_raw;
@@ -744,15 +712,15 @@ int main(void)
         UvcAlternate alternate;
         bool video_changed = true;
         assert(receive_av(42, &mode, &alternate, &video_changed) == ISO_SUBMIT_FAILED);
-        assert(video_changed == (n == 0) && av_recording.failed);
-        assert(diagnostic_reads == (n == 0 ? 4u : 2u));
+        assert(video_changed && av_recording.failed);
+        assert(diagnostic_reads == 2);
         assert(strstr(diagnostic_log, comparisons[n].expected_log));
         assert(strstr(diagnostic_log, "unadvertised alternate remains unusable"));
         cleanup_test = true;
         stop_video_stream(42, video_changed);
         assert(!starts && !closes && !probes && !enables && !captures);
-        assert(idle_sets == (n == 0 ? 2u : 0u) && cleanup_calls == (n == 0));
+        assert(idle_sets == 2 && cleanup_calls == 1);
     }
     puts(
-        "PASS: actual startup: 36 readiness/preflight/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 24 checked video-idle cases, 15 independent comparison cases");
+        "PASS: actual startup: 35 readiness/preflight/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 14 checked video-idle cases, 15 independent comparison cases");
 }
