@@ -1417,28 +1417,22 @@ static IsoStop av_audio_prime(unsigned before)
 static bool av_video_idle(s32 handle, const UvcMode *mode, bool *video_changed)
 {
     if (!mode->configuration || !mode->alt_count || mode->alt_count > WC04_MAX_ALTS) return false;
-    /* VEN's synchronous setter establishes host/device state; GET_INTERFACE is not a
-     * prerequisite. Retain an independent configuration check before starting audio. */
+    /* Discovery checked the configuration. VEN's synchronous setter establishes
+     * idle state; the existing UVC exchange validates preparation before audio. */
     *video_changed = true;
     s32 selected = WC04_SetAlternate(handle, 0);
     report("A/V video alternate 0 via IOS: interface=%u result=%ld; exact success required.\n",
            mode->interface, (long)selected);
-    if (selected != 0) return false;
-    probe[0] = (uint8_t)~mode->configuration;
-    s32 result = USB_ReadCtrlMsg(handle, 0x80, 8, 0, 0, 1, probe);
-    int payload = uvc_control_payload_length(result, 1);
-    report("A/V GET_CONFIGURATION after idle: raw=%ld payload=%d value=%u expected=%u.\n",
-           (long)result, payload, probe[0], mode->configuration);
-    return payload == 1 && probe[0] == mode->configuration;
+    return selected == 0;
 }
 
 static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt, bool *video_changed)
 {
     *video_changed = false;
     draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height, "Checking microphone - B cancels");
-    report("A/V checking video idle before starting audio.\n");
-    if (!av_video_idle(handle, mode, video_changed)) {
-        report("A/V video idle preflight failed; audio not started.\n");
+    report("A/V preparing video before starting audio.\n");
+    if (!av_video_idle(handle, mode, video_changed) || !probe_camera(handle, mode, alt)) {
+        report("A/V video preparation failed; audio not started.\n");
         av_recording.failed = true;
         return ISO_SUBMIT_FAILED;
     }
@@ -1446,21 +1440,9 @@ static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt, bo
         av_recording.failed = true;
         return ISO_SUBMIT_FAILED;
     }
+    atomic_store(&av_audio.phase, AV_VIDEO_PREPARED);
+    /* All readiness PCM must follow the completed UVC preparation. */
     IsoStop result = av_audio_prime(0);
-    if (result == ISO_RUNNING) {
-        atomic_store(&av_audio.phase, AV_VIDEO_PREPARING);
-        report("A/V starting UVC controls after microphone reception: PCM_bytes=%u\n",
-               audio_stream_position(&av_audio.stream));
-        if (!probe_camera(handle, mode, alt))
-            result = ISO_SUBMIT_FAILED;
-        else if (atomic_load(&av_audio.stream.failed))
-            result = ISO_COMPLETION_FAILED;
-        else {
-            atomic_store(&av_audio.phase, AV_VIDEO_PREPARED);
-            /* Require fresh PCM after controls; earlier audio cannot satisfy this gate. */
-            result = av_audio_prime(audio_stream_position(&av_audio.stream));
-        }
-    }
     if (result == ISO_RUNNING) {
         atomic_store(&av_audio.phase, AV_VIDEO_ENABLING);
         av_audio_stop();
@@ -1552,7 +1534,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.13 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.14 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");

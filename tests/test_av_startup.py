@@ -34,16 +34,12 @@ log_start = main.index("static void av_audio_log_rejections(")
 log_end = main.index("static void av_audio_close(void)\n{", log_start)
 code += main[consume_start:consume_end] + main[log_start:log_end]
 code += main[prepare_start:prepare_end] + main[wait_start:queue_end] + main[prime_start:prime_end]
-uvc = (root / "source/uvc.c").read_text()
-payload_start = uvc.index("int uvc_control_payload_length(")
-payload_end = uvc.index("bool uvc_interval_supported(", payload_start)
-code += uvc[payload_start:payload_end]
 with tempfile.TemporaryDirectory(prefix="wiicam-av-startup-") as directory:
     work = Path(directory)
     (work / "av_startup_under_test.h").write_text(code)
     subprocess.run(
         [*shlex.split(args.cc), "-std=c11", "-Wall", "-Wextra", "-Werror",
-         "-Isource", "-I" + directory, "source/audio_stream.c", "source/iso_queue.c",
+         "-Isource", "-I" + directory, "source/audio_stream.c", "source/iso_queue.c", "source/uvc.c",
          "tests/test_av_startup.c", "-o", str(work / "test")],
         cwd=root, check=True,
     )
