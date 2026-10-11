@@ -1344,6 +1344,31 @@ static IsoStop av_audio_prime(unsigned before)
     }
 }
 
+static void av_video_readback_diagnostic(s32 handle, const UvcMode *mode)
+{
+    /* No queues are live here. Separate cache lines distinguish replies from stale scratch. */
+    uint8_t primary = probe[0];
+    uint8_t *alternate = config, *configuration = config + 32;
+    memset(alternate, 0xa5, 32);
+    memset(configuration, 0x5a, 32);
+    s32 repeated = USB_ReadCtrlMsg(handle, 0x81, 10, 0, mode->interface, 1, alternate);
+    uint8_t repeated_byte = alternate[0];
+    s32 configured = USB_ReadCtrlMsg(handle, 0x80, 8, 0, 0, 1, configuration);
+    bool alternate_guard = true, configuration_guard = true;
+    for (unsigned n = 1; n < 32; ++n) {
+        if (alternate[n] != 0xa5) alternate_guard = false;
+        if (configuration[n] != 0x5a) configuration_guard = false;
+    }
+    report("A/V alternate comparison (diagnostic only): interface=%u primary=%u "
+           "repeat_raw=%ld repeat_payload=%d repeat_byte=%u "
+           "config_raw=%ld config_payload=%d config_byte=%u expected_config=%u "
+           "tail_guards=%u/%u probe_unchanged=%u; original alternate remains rejected.\n",
+           mode->interface, primary, (long)repeated, uvc_control_payload_length(repeated, 1),
+           repeated_byte, (long)configured, uvc_control_payload_length(configured, 1),
+           configuration[0], mode->configuration, alternate_guard, configuration_guard,
+           probe[0] == primary);
+}
+
 static int av_video_alternate(s32 handle, const UvcMode *mode)
 {
     probe[0] = 0xff;
@@ -1356,6 +1381,7 @@ static int av_video_alternate(s32 handle, const UvcMode *mode)
     for (size_t n = 0; n < mode->alt_count; ++n)
         if (mode->alts[n].number == probe[0]) return probe[0];
     report("A/V GET_INTERFACE returned unadvertised alternate=%u; video not reset.\n", probe[0]);
+    av_video_readback_diagnostic(handle, mode);
     return -1;
 }
 
@@ -1472,7 +1498,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.7 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.8 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");

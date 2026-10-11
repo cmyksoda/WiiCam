@@ -8,6 +8,7 @@
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef int32_t s32;
@@ -61,6 +62,12 @@ static unsigned idle_reads, idle_sets, expected_interface = 1;
 static int idle_raw[2], idle_set_result;
 static uint8_t idle_alternate[2];
 static uint8_t probe[UVC_PROBE_LENGTH];
+static _Alignas(32) uint8_t config[64];
+static unsigned diagnostic_reads;
+static int repeat_raw, configuration_raw;
+static uint8_t repeat_byte, configuration_byte;
+static bool corrupt_guards, corrupt_probe;
+static char diagnostic_log[1024];
 
 static struct {
     bool failed;
@@ -125,6 +132,30 @@ static s32 WC04_SetAlternate(s32 handle, uint8_t alternate)
 static s32 USB_ReadCtrlMsg(s32 handle, uint8_t type, uint8_t request, uint16_t value,
                            uint16_t index, uint16_t length, void *data)
 {
+    if (data == config || data == config + 32) {
+        assert(handle == 42 && !value && length == 1);
+        assert(!starts && !av_audio.opened && !probes && !enables && !silent);
+        assert(diagnostic_reads < 2);
+        uint8_t *bytes = data;
+        if (data == config) {
+            assert(!diagnostic_reads && type == 0x81 && request == 10
+                   && index == expected_interface);
+            for (unsigned n = 0; n < 32; ++n)
+                assert(bytes[n] == 0xa5);
+            bytes[0] = repeat_byte;
+            if (corrupt_guards) bytes[31] = 0;
+            if (corrupt_probe) probe[0] ^= 1;
+            ++diagnostic_reads;
+            return repeat_raw;
+        }
+        assert(diagnostic_reads == 1 && type == 0x80 && request == 8 && !index);
+        for (unsigned n = 0; n < 32; ++n)
+            assert(bytes[n] == 0x5a);
+        bytes[0] = configuration_byte;
+        if (corrupt_guards) bytes[1] = 0;
+        ++diagnostic_reads;
+        return configuration_raw;
+    }
     assert(handle == 42 && type == 0x81 && request == 10 && !value);
     assert(index == expected_interface && length == 1 && data == probe);
     if (idle_unit_test) {
@@ -217,7 +248,13 @@ static uint64_t ticks_to_millisecs(uint64_t ticks)
 
 static void report(const char *format, ...)
 {
-    (void)format;
+    if (strstr(format, "A/V alternate comparison")) {
+        va_list args;
+        va_start(args, format);
+        int size = vsnprintf(diagnostic_log, sizeof(diagnostic_log), format, args);
+        va_end(args);
+        assert(size > 0 && (size_t)size < sizeof(diagnostic_log));
+    }
 }
 
 static void draw_screen(ScreenPage page, const uint8_t *rgb, unsigned width, unsigned height,
@@ -275,7 +312,13 @@ static void reset(void)
     starts = enables = captures = closes = event_count = probes = idles = 0;
     clock_ms = controls_ms = 0;
     exit_requested = silent = idle_unit_test = cleanup_test = settling_test = false;
-    cleanup_calls = 0;
+    cleanup_calls = diagnostic_reads = 0;
+    repeat_raw = configuration_raw = 9;
+    repeat_byte = 220;
+    configuration_byte = 1;
+    corrupt_guards = corrupt_probe = false;
+    diagnostic_log[0] = 0;
+    memset(config, 0xcc, sizeof(config));
     idle_reads = idle_sets = 0;
     expected_interface = 1;
     memset(events, 0, sizeof(events));
@@ -285,7 +328,8 @@ static void reset(void)
 
 int main(void)
 {
-    const UvcMode mode = {.interface = 1,
+    const UvcMode mode = {.configuration = 1,
+                          .interface = 1,
                           .width = 320,
                           .height = 240,
                           .alt_count = 1,
@@ -328,6 +372,7 @@ int main(void)
                == (expected[scenario] == ISO_SUBMIT_FAILED
                    || expected[scenario] == ISO_COMPLETION_FAILED
                    || expected[scenario] == ISO_TIMEOUT));
+        assert(diagnostic_reads == (scenario == UNADVERTISED_IDLE ? 2u : 0u));
         bool idle_changed =
             scenario >= ACTIVE_IDLE_SUCCESS && scenario <= ACTIVE_IDLE_READBACK_FAIL;
         assert(!av_audio.opened && idle_sets == idle_changed);
@@ -418,6 +463,7 @@ int main(void)
         bool video_changed = false;
         assert(av_video_idle(42, &checked_mode, &video_changed) == idle_cases[n].expected);
         assert(video_changed == (idle_cases[n].sets != 0));
+        assert(diagnostic_reads == (n >= 11 ? 2u : 0u));
         assert(idle_reads == idle_cases[n].reads && idle_sets == idle_cases[n].sets);
         assert(!starts && !probes && !enables && !captures && !closes);
     }
@@ -430,6 +476,42 @@ int main(void)
     bool video_changed = false;
     assert(!av_video_idle(42, &oversized, &video_changed));
     assert(idle_reads == 1 && !idle_sets && !video_changed);
+
+    const struct {
+        int repeat_raw, config_raw;
+        uint8_t alternate, configuration;
+        bool guards, probe;
+        const char *expected_log;
+    } comparisons[] = {
+        {9, 9, 220, 1, false, false, "repeat_raw=9 repeat_payload=1 repeat_byte=220"},
+        {9, 9, 0, 1, false, false, "repeat_raw=9 repeat_payload=1 repeat_byte=0"},
+        {-7102, 9, 165, 1, false, false, "repeat_raw=-7102 repeat_payload=-7102 repeat_byte=165"},
+        {8, -4, 165, 90, false, false, "config_raw=-4 config_payload=-4 config_byte=90"},
+        {9, 9, 220, 2, false, false, "config_byte=2 expected_config=1"},
+        {9, 9, 220, 1, true, false, "tail_guards=0/0 probe_unchanged=1"},
+        {9, 9, 220, 1, false, true, "tail_guards=1/1 probe_unchanged=0"},
+    };
+
+    for (unsigned n = 0; n < sizeof(comparisons) / sizeof(comparisons[0]); ++n) {
+        reset();
+        scenario = UNADVERTISED_IDLE;
+        repeat_raw = comparisons[n].repeat_raw;
+        configuration_raw = comparisons[n].config_raw;
+        repeat_byte = comparisons[n].alternate;
+        configuration_byte = comparisons[n].configuration;
+        corrupt_guards = comparisons[n].guards;
+        corrupt_probe = comparisons[n].probe;
+        UvcAlternate alternate;
+        bool video_changed = true;
+        assert(receive_av(42, &mode, &alternate, &video_changed) == ISO_SUBMIT_FAILED);
+        assert(!video_changed && av_recording.failed && diagnostic_reads == 2);
+        assert(strstr(diagnostic_log, comparisons[n].expected_log));
+        assert(strstr(diagnostic_log, "original alternate remains rejected"));
+        cleanup_test = true;
+        stop_video_stream(42, video_changed);
+        assert(!starts && !closes && !probes && !enables && !captures && !idle_sets
+               && !cleanup_calls);
+    }
     puts(
-        "PASS: actual startup: 26 readiness/preflight/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 15 checked video-idle cases");
+        "PASS: actual startup: 26 readiness/preflight/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 15 checked video-idle cases, 7 diagnostic comparison cases");
 }
