@@ -31,6 +31,7 @@
 #include "refresh_control.h"
 #include "microphone.h"
 #include "av_recorder.h"
+#include "iso_trace.h"
 
 #define FRAME_TIMEOUT_SECONDS 10
 #define AV_RATE_SETTLE_MS 50
@@ -909,6 +910,43 @@ typedef struct {
     unsigned width, height;
 } MicTest;
 
+static void log_audio_trace(const char *text)
+{
+    report("%s", text);
+}
+
+static s32 traced_audio_alternate(s32 handle, u8 alternate)
+{
+    s32 result = WC04_SetAlternate(handle, alternate);
+    iso_trace_alternate(alternate, result);
+    return result;
+}
+
+static s32 traced_audio_cancel(s32 handle, u8 endpoint)
+{
+    unsigned token = iso_trace_cancel_begin();
+    s32 result = WC04_CancelIso(handle, endpoint);
+    iso_trace_cancel_end(token, result);
+    return result;
+}
+
+static void begin_audio_trace(s32 video_handle, const UvcMode *video_mode, const MicTest *test,
+                              bool av)
+{
+    IsoTraceContext context = {.video_id = video_handle,
+                               .audio_id = test->handle,
+                               .video_interface = video_mode->interface,
+                               .audio_interface = test->mode.interface,
+                               .endpoint = test->mode.endpoint,
+                               .capacity = test->mode.packet_capacity,
+                               .interval = test->mode.interval,
+                               .tick_hz = PPC_TIMER_CLOCK,
+                               .ios = IOS_GetVersion(),
+                               .revision = IOS_GetRevision(),
+                               .av = av};
+    iso_trace_begin(&context, gettime);
+}
+
 static int mic_control(void *context, uint8_t type, uint8_t request, uint16_t value, uint16_t index,
                        uint8_t *data, unsigned length)
 {
@@ -932,6 +970,7 @@ static int mic_submit(void *context, IsoSlot *slot)
 static bool mic_consume(void *context, const IsoSlot *slot)
 {
     MicTest *test = context;
+    iso_trace_consume(slot, slot->sizes);
     for (unsigned n = 0; n < ISO_PACKETS; ++n) {
         size_t before = test->pcm.size;
         if (!microphone_pcm_packet(&test->pcm, slot->data + n * test->mode.packet_capacity,
@@ -972,7 +1011,7 @@ static void mic_cancel(void *context)
 {
     const MicTest *test = context;
     draw_screen(SCREEN_WAITING, NULL, test->width, test->height, "If stuck here, unplug camera");
-    s32 result = WC04_CancelIso(test->handle, test->mode.endpoint);
+    s32 result = traced_audio_cancel(test->handle, test->mode.endpoint);
     report("Microphone cancel endpoint=%02x result=%ld; waiting for all completions.\n",
            test->mode.endpoint, (long)result);
 }
@@ -1045,13 +1084,14 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
     if (!find_camera(&video_handle, width, height, &video_mode)) return;
     MicTest test = {.width = width, .height = height};
     bool opened = mic_open(video_handle, &video_mode, &test);
+    if (opened) begin_audio_trace(video_handle, &video_mode, &test, false);
     USB_CloseDevice(&video_handle);
     if (!opened) return;
     uint8_t *samples = malloc(MIC_BYTES);
     microphone_pcm_init(&test.pcm, samples, MIC_BYTES);
     MicRateResult rate = MIC_RATE_FAILED;
-    if (samples && WC04_SetAlternate(test.handle, 0) >= 0
-        && WC04_SetAlternate(test.handle, test.mode.alternate) >= 0)
+    if (samples && traced_audio_alternate(test.handle, 0) >= 0
+        && traced_audio_alternate(test.handle, test.mode.alternate) >= 0)
         rate = microphone_set_rate(&test.entry, &test.mode, mic_control, &test, probe);
     if (rate == MIC_RATE_UNREADABLE) test.pcm.rejection_budget = MIC_MAX_REJECTED_PACKETS;
     if (rate == MIC_RATE_UNREADABLE)
@@ -1074,6 +1114,7 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
                                 .cancel = mic_cancel};
         test.start = gettime();
         IsoStop stop = iso_queue_run(&queue, &hooks, &test);
+        iso_trace_queue_done();
         unsigned elapsed = (unsigned)ticks_to_millisecs(gettime() - test.start);
         report("Microphone result: bytes=%u samples=%u packets=%u empty=%u lengths=%u..%u "
                "peak=%u fatal=%u elapsed_ms=%u first_packet_ms=%llu last_packet_ms=%llu\n",
@@ -1125,6 +1166,7 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
     report("Microphone idle alternate: %ld\n", (long)stopped);
     USB_CloseDevice(&test.handle);
     free(samples);
+    iso_trace_dump(log_audio_trace);
 }
 
 static s32 av_audio_finished(s32 result, void *context)
@@ -1153,6 +1195,7 @@ static int av_audio_submit(void *context, IsoSlot *slot)
 
 static bool av_audio_consume(void *context, const IsoSlot *slot)
 {
+    iso_trace_consume(slot, slot->sizes);
     AvCapture *audio = context;
     unsigned now = (unsigned)ticks_to_millisecs(gettime() - audio->start);
     unsigned before = audio_stream_position(&audio->stream);
@@ -1218,7 +1261,7 @@ static void av_audio_stopping(void *context, IsoStop reason, int failure)
 static void av_audio_cancel(void *context)
 {
     AvCapture *audio = context;
-    audio->cancel_result = WC04_CancelIso(audio->handle, audio->mode.endpoint);
+    audio->cancel_result = traced_audio_cancel(audio->handle, audio->mode.endpoint);
 }
 
 static void *av_audio_worker(void *context)
@@ -1232,6 +1275,7 @@ static void *av_audio_worker(void *context)
                             .stopping = av_audio_stopping,
                             .cancel = av_audio_cancel};
     iso_queue_run(&audio->queue, &hooks, audio);
+    iso_trace_queue_done();
     atomic_store(&audio->done, true);
     return NULL;
 }
@@ -1291,12 +1335,13 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
     atomic_init(&av_audio.phase, AV_AUDIO_ONLY);
     MicTest test = {0};
     if (!mic_open(handle, mode, &test)) return false;
+    begin_audio_trace(handle, mode, &test, true);
     av_audio.handle = test.handle;
     av_audio.mode = test.mode;
     av_audio.opened = true;
     MicRateResult rate = MIC_RATE_FAILED;
-    if (WC04_SetAlternate(test.handle, 0) >= 0
-        && WC04_SetAlternate(test.handle, test.mode.alternate) >= 0)
+    if (traced_audio_alternate(test.handle, 0) >= 0
+        && traced_audio_alternate(test.handle, test.mode.alternate) >= 0)
         rate = microphone_set_rate(&test.entry, &test.mode, mic_control, &test, probe);
     uint64_t configured = gettime();
     audio_stream_init(&av_audio.stream, rate);
@@ -1383,6 +1428,7 @@ static void av_audio_close(void)
     report("A/V audio idle alternate=%ld\n", (long)result);
     USB_CloseDevice(&av_audio.handle);
     av_audio.opened = false;
+    iso_trace_dump(log_audio_trace);
 }
 
 static IsoStop av_audio_prime(unsigned before)
@@ -1534,7 +1580,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.14 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.15 diagnostic - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");

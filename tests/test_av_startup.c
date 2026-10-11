@@ -2,6 +2,7 @@
  * Copyright (c) 2026 cmyksoda
  */
 #include "audio_stream.h"
+#include "iso_trace.h"
 #include "iso_queue.h"
 #include "screen.h"
 #include "uvc.h"

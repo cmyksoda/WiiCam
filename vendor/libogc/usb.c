@@ -1,5 +1,6 @@
-/* WC04 Camera altered version: added bounded descriptor access and two USBv5 control wrappers at EOF.
- * All existing libogc USB functions are unchanged. See vendor/libogc/README.md.
+/* WC04 Camera altered version: bounded descriptor access and USBv5 wrappers,
+ * plus passive first-audio-request diagnostics in the V5 ISO submit/callback path.
+ * Transfer arguments, ownership and returned results are preserved.
  */
 /*-------------------------------------------------------------
 
@@ -54,6 +55,7 @@ distribution.
 #include <processor.h>
 
 #include "usb.h"
+#include "../../source/iso_trace.h"
 
 #define USB_HEAPSIZE                         16384
 
@@ -243,6 +245,7 @@ static s32 __usbv5_messageCB(s32 result,void *_msg)
 
 	if(msg==NULL) return IPC_EINVAL;
 
+	iso_trace_callback(msg, result);
 	if(msg->cb!=NULL) msg->cb(result, msg->userdata);
 
 	iosFree(hId,msg);
@@ -366,8 +369,23 @@ done:
 
 		if (cb==NULL)
 			ret = IOS_Ioctlv(fd, USBV5_IOCTL_ISOMSG, 2-endpoint_dir, 2+endpoint_dir, msg->vec);
-		else
-			return IOS_IoctlvAsync(fd, USBV5_IOCTL_ISOMSG, 2-endpoint_dir, 2+endpoint_dir, msg->vec, __usbv5_messageCB, msg);
+		else {
+			unsigned token = ISO_TRACE_NONE;
+			if (iso_trace_wants(device_id, bEndpoint)) {
+				IsoTraceWire wire = {.request = msg, .slot = userdata, .header = msg,
+					.sizes = rpPacketSizes, .device = device_id, .endpoint = bEndpoint,
+					.packets = bPackets, .length = wLength,
+					.in_count = 2-endpoint_dir, .io_count = 2+endpoint_dir};
+				for (unsigned n = 0; n < 4; ++n) {
+					wire.vector_address[n] = (uintptr_t)msg->vec[n].data;
+					wire.vector_length[n] = msg->vec[n].len;
+				}
+				token = iso_trace_submit(&wire);
+			}
+			ret = IOS_IoctlvAsync(fd, USBV5_IOCTL_ISOMSG, 2-endpoint_dir, 2+endpoint_dir, msg->vec, __usbv5_messageCB, msg);
+			iso_trace_submit_result(token, ret);
+			return ret;
+		}
 	}
 
 	if (msg!=NULL) iosFree(hId,msg);
