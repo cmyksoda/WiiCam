@@ -44,10 +44,10 @@ enum {
     PARTIAL_AFTER_CONTROLS,
     INVALID_AFTER_CONTROLS,
     CONTROL_PCM_ONLY,
-    UNADVERTISED_IDLE,
-    NONZERO_IDLE,
-    UNREADABLE_IDLE,
-    SHORT_IDLE,
+    POSITIVE_IDLE,
+    CONFIG_MISMATCH,
+    UNREADABLE_CONFIG,
+    SHORT_CONFIG,
     PAUSE_FAIL,
     RESTART_FAIL,
     EMPTY_AFTER_RESTART,
@@ -68,17 +68,11 @@ static char events[32];
 static unsigned event_count;
 static bool idle_unit_test, cleanup_test;
 static unsigned cleanup_calls;
-static unsigned idle_reads, idle_sets, expected_interface = 1;
-static int idle_raw[1], idle_set_result;
-static uint8_t idle_alternate[1];
+static unsigned idle_reads, idle_sets;
+static int configuration_raw, idle_set_result;
+static uint8_t configuration_byte, expected_configuration;
+static bool leave_configuration_unchanged;
 static uint8_t probe[UVC_PROBE_LENGTH];
-static _Alignas(32) uint8_t config[64];
-static unsigned diagnostic_reads;
-static int repeat_raw, configuration_raw;
-static uint8_t repeat_byte, configuration_byte;
-static unsigned corrupt_guards;
-static bool corrupt_probe;
-static char diagnostic_log[1024];
 static bool rejection_log_test;
 static char rejection_log[4096];
 static unsigned rejection_log_used;
@@ -128,10 +122,11 @@ static s32 WC04_SetAlternate(s32 handle, uint8_t alternate)
             return 0;
         }
         if (!silent) {
-            assert(!idle_reads && !diagnostic_reads);
+            assert(!idle_reads);
             assert(!starts && !av_audio.opened && !probes && !enables);
             event('Z');
-            return scenario == IDLE_FAIL ? -4 : 0;
+            ++idles;
+            return scenario == IDLE_FAIL ? -4 : scenario == POSITIVE_IDLE ? 1 : 0;
         }
         event('I');
         ++idles;
@@ -154,44 +149,20 @@ static s32 WC04_SetAlternate(s32 handle, uint8_t alternate)
 static s32 USB_ReadCtrlMsg(s32 handle, uint8_t type, uint8_t request, uint16_t value,
                            uint16_t index, uint16_t length, void *data)
 {
-    if (data == config || data == config + 32) {
-        assert(handle == 42 && !value && length == 1);
-        assert(!starts && !av_audio.opened && !probes && !enables && !silent);
-        assert(diagnostic_reads < 2 && idle_sets == 1);
-        uint8_t *bytes = data;
-        if (data == config) {
-            assert(!diagnostic_reads && type == 0x81 && request == 10
-                   && index == expected_interface);
-            for (unsigned n = 0; n < 32; ++n)
-                assert(bytes[n] == 0xa5);
-            bytes[0] = repeat_byte;
-            if (corrupt_guards & 1) bytes[31] = 0;
-            if (corrupt_probe) probe[0] ^= 1;
-            ++diagnostic_reads;
-            return repeat_raw;
-        }
-        assert(diagnostic_reads == 1 && type == 0x80 && request == 8 && !index);
-        for (unsigned n = 0; n < 32; ++n)
-            assert(bytes[n] == 0x5a);
-        bytes[0] = configuration_byte;
-        if (corrupt_guards & 2) bytes[1] = 0;
-        ++diagnostic_reads;
+    assert(handle == 42 && type == 0x80 && request == 8 && !value && !index);
+    assert(length == 1 && data == probe && probe[0] == (uint8_t)(expected_configuration ^ 0xffu));
+    assert(!idle_reads && idle_sets == 1);
+    assert(!starts && !av_audio.opened && !probes && !enables && !silent);
+    ++idle_reads;
+    event('K');
+    if (idle_unit_test) {
+        assert(idle_set_result == 0);
+        if (!leave_configuration_unchanged) probe[0] = configuration_byte;
         return configuration_raw;
     }
-    assert(handle == 42 && type == 0x81 && request == 10 && !value);
-    assert(index == expected_interface && length == 1 && data == probe);
-    if (idle_unit_test) {
-        assert(!idle_reads && idle_sets == 1);
-        probe[0] = idle_alternate[idle_reads];
-        return idle_raw[idle_reads++];
-    }
-    ++idle_reads;
-    ++idles;
-    event('I');
-    assert(!starts && !av_audio.opened && !probes && !enables && !silent);
-    assert(idle_sets == 1 && idle_reads == 1);
-    probe[0] = scenario == UNADVERTISED_IDLE ? 220 : scenario == NONZERO_IDLE ? 3 : 0;
-    return scenario == UNREADABLE_IDLE ? -7102 : scenario == SHORT_IDLE ? 8 : 9;
+    assert(scenario != IDLE_FAIL && scenario != POSITIVE_IDLE);
+    probe[0] = scenario == CONFIG_MISMATCH ? 2 : 1;
+    return scenario == UNREADABLE_CONFIG ? -7102 : scenario == SHORT_CONFIG ? 8 : 9;
 }
 
 static int probe_transfer(void *context, uint8_t request, uint16_t selector, uint8_t *data)
@@ -327,13 +298,6 @@ static void report(const char *format, ...)
         assert(size >= 0 && (unsigned)size < sizeof(rejection_log) - rejection_log_used);
         rejection_log_used += (unsigned)size;
     }
-    if (strstr(format, "A/V alternate comparison")) {
-        va_list args;
-        va_start(args, format);
-        int size = vsnprintf(diagnostic_log, sizeof(diagnostic_log), format, args);
-        va_end(args);
-        assert(size > 0 && (size_t)size < sizeof(diagnostic_log));
-    }
 }
 
 static void draw_screen(ScreenPage page, const uint8_t *rgb, unsigned width, unsigned height,
@@ -402,15 +366,11 @@ static void reset(void)
     clock_ms = controls_ms = restarted_ms = 0;
     pauses = restarts = pre_pause_rejected = 0;
     exit_requested = silent = idle_unit_test = cleanup_test = settling_test = false;
-    cleanup_calls = diagnostic_reads = 0;
-    repeat_raw = configuration_raw = 9;
-    repeat_byte = 220;
-    configuration_byte = 1;
-    corrupt_guards = corrupt_probe = false;
-    diagnostic_log[0] = 0;
-    memset(config, 0xcc, sizeof(config));
+    cleanup_calls = 0;
+    configuration_raw = 9;
+    configuration_byte = expected_configuration = 1;
+    leave_configuration_unchanged = false;
     idle_reads = idle_sets = 0;
-    expected_interface = 1;
     memset(events, 0, sizeof(events));
     memset(&av_audio, 0, sizeof(av_audio));
     av_recording.failed = false;
@@ -539,10 +499,10 @@ int main(void)
         [PARTIAL_AFTER_CONTROLS] = ISO_TIMEOUT,
         [INVALID_AFTER_CONTROLS] = ISO_COMPLETION_FAILED,
         [CONTROL_PCM_ONLY] = ISO_TIMEOUT,
-        [UNADVERTISED_IDLE] = ISO_SUBMIT_FAILED,
-        [NONZERO_IDLE] = ISO_SUBMIT_FAILED,
-        [UNREADABLE_IDLE] = ISO_SUBMIT_FAILED,
-        [SHORT_IDLE] = ISO_SUBMIT_FAILED,
+        [POSITIVE_IDLE] = ISO_SUBMIT_FAILED,
+        [CONFIG_MISMATCH] = ISO_SUBMIT_FAILED,
+        [UNREADABLE_CONFIG] = ISO_SUBMIT_FAILED,
+        [SHORT_CONFIG] = ISO_SUBMIT_FAILED,
         [PAUSE_FAIL] = ISO_COMPLETION_FAILED,
         [RESTART_FAIL] = ISO_SUBMIT_FAILED,
         [EMPTY_AFTER_RESTART] = ISO_TIMEOUT,
@@ -563,11 +523,10 @@ int main(void)
                == (expected[scenario] == ISO_SUBMIT_FAILED
                    || expected[scenario] == ISO_COMPLETION_FAILED
                    || expected[scenario] == ISO_TIMEOUT));
-        assert(diagnostic_reads == (scenario == UNADVERTISED_IDLE ? 2u : 0u));
         assert(!av_audio.opened && idle_sets == 1);
-        assert(idle_reads == (scenario == IDLE_FAIL ? 0u : 1u));
-        if (scenario == IDLE_FAIL || scenario == UNADVERTISED_IDLE || scenario == NONZERO_IDLE
-            || scenario == UNREADABLE_IDLE || scenario == SHORT_IDLE) {
+        assert(idle_reads == (scenario == IDLE_FAIL || scenario == POSITIVE_IDLE ? 0u : 1u));
+        if (scenario == IDLE_FAIL || scenario == POSITIVE_IDLE || scenario == CONFIG_MISMATCH
+            || scenario == UNREADABLE_CONFIG || scenario == SHORT_CONFIG) {
             assert(!starts && !enables && !captures && !closes);
         } else if (scenario == AUDIO_OPEN_FAIL) {
             assert(starts == 1 && !enables && !captures && !closes);
@@ -586,7 +545,7 @@ int main(void)
         assert(pauses == (activated || scenario == PAUSE_FAIL));
         assert(restarts
                == (activated && scenario != ENABLE_FAIL && scenario != FAIL_DURING_ENABLE));
-        if (captures) assert(!strcmp(events, "ZIAPQVRCX"));
+        if (captures) assert(!strcmp(events, "ZKAPQVRCX"));
         assert(video_changed);
         cleanup_test = true;
         stop_video_stream(42, video_changed);
@@ -637,28 +596,40 @@ int main(void)
 
     const struct {
         int raw, set_result;
-        uint8_t alternate;
-        bool expected;
+        uint8_t value, expected_configuration;
+        bool leave_unchanged, expected;
     } idle_cases[] = {
-        {9, 0, 0, true},    {1, 0, 0, false},  {-7102, 0, 0, false}, {0, 0, 0, false},
-        {8, 0, 0, false},   {10, 0, 0, false}, {9, 0, 3, false},     {9, 0, 220, false},
-        {9, 0, 255, false}, {9, -4, 0, false}, {9, 1, 0, true},
+        {9, 0, 1, 1, false, true},      {1, 0, 1, 1, false, false},
+        {-7102, 0, 1, 1, false, false}, {-7022, 0, 1, 1, false, false},
+        {0, 0, 1, 1, false, false},     {8, 0, 1, 1, false, false},
+        {10, 0, 1, 1, false, false},    {9, 0, 0, 1, false, false},
+        {9, 0, 2, 1, false, false},     {9, 0, 220, 1, false, false},
+        {9, 0, 255, 1, false, false},   {9, -4, 1, 1, false, false},
+        {9, -7102, 1, 1, false, false}, {9, 1, 1, 1, false, false},
+        {9, 8, 1, 1, false, false},     {9, 0, 2, 2, false, true},
+        {9, 0, 1, 1, true, false},      {9, 0, 255, 255, false, true},
+        {9, 0, 255, 255, true, false},
     };
 
     for (unsigned n = 0; n < sizeof(idle_cases) / sizeof(idle_cases[0]); ++n) {
         reset();
         idle_unit_test = true;
-        idle_raw[0] = idle_cases[n].raw;
-        idle_alternate[0] = idle_cases[n].alternate;
+        configuration_raw = idle_cases[n].raw;
+        configuration_byte = idle_cases[n].value;
         idle_set_result = idle_cases[n].set_result;
+        leave_configuration_unchanged = idle_cases[n].leave_unchanged;
         UvcMode checked_mode = mode;
-        if (n == 8 || n == 10) expected_interface = checked_mode.interface = 7;
+        expected_configuration = checked_mode.configuration = idle_cases[n].expected_configuration;
+        checked_mode.interface = 7;
         bool video_changed = false;
         assert(av_video_idle(42, &checked_mode, &video_changed) == idle_cases[n].expected);
         assert(video_changed && idle_sets == 1);
-        assert(diagnostic_reads == (n == 7 || n == 8 ? 2u : 0u));
-        assert(idle_reads == (idle_cases[n].set_result < 0 ? 0u : 1u));
+        assert(idle_reads == (idle_set_result == 0 ? 1u : 0u));
         assert(!starts && !probes && !enables && !captures && !closes);
+        idle_unit_test = false;
+        cleanup_test = true;
+        stop_video_stream(42, video_changed);
+        assert(idle_sets == 2 && cleanup_calls == 1);
     }
     for (unsigned n = 0; n < 3; ++n) {
         reset();
@@ -669,58 +640,12 @@ int main(void)
         if (n == 2) invalid.configuration = 0;
         bool video_changed = false;
         assert(!av_video_idle(42, &invalid, &video_changed));
-        assert(!idle_sets && !idle_reads && !diagnostic_reads && !video_changed);
+        assert(!idle_sets && !idle_reads && !video_changed);
         idle_unit_test = false;
         cleanup_test = true;
         stop_video_stream(42, video_changed);
         assert(!idle_sets && !cleanup_calls);
     }
-
-    const struct {
-        int repeat_raw, config_raw;
-        uint8_t alternate, configuration;
-        unsigned guards;
-        bool probe;
-        const char *expected_log;
-    } comparisons[] = {
-        {9, 9, 220, 1, false, false, "repeat_raw=9 repeat_payload=1 repeat_byte=220"},
-        {9, 9, 0, 1, false, false, "repeat_raw=9 repeat_payload=1 repeat_byte=0"},
-        {-7102, 9, 165, 1, false, false, "repeat_raw=-7102 repeat_payload=-7102 repeat_byte=165"},
-        {8, -4, 165, 90, false, false, "config_raw=-4 config_payload=-4 config_byte=90"},
-        {9, 9, 220, 2, false, false, "config_byte=2 expected_config=1"},
-        {9, 9, 220, 1, 3, false, "tail_guards=0/0 probe_unchanged=1"},
-        {9, 9, 220, 1, false, true, "tail_guards=1/1 probe_unchanged=0"},
-        {8, 9, 220, 1, false, false, "repeat_raw=8 repeat_payload=0"},
-        {10, 9, 220, 1, false, false, "repeat_raw=10 repeat_payload=-1"},
-        {9, 8, 220, 1, false, false, "config_raw=8 config_payload=0"},
-        {9, 10, 220, 1, false, false, "config_raw=10 config_payload=-1"},
-        {9, -4, 220, 1, false, false, "config_raw=-4 config_payload=-4"},
-        {9, 9, 220, 0, false, false, "config_byte=0 expected_config=1"},
-        {9, 9, 220, 1, 1, false, "tail_guards=0/1 probe_unchanged=1"},
-        {9, 9, 220, 1, 2, false, "tail_guards=1/0 probe_unchanged=1"},
-    };
-
-    for (unsigned n = 0; n < sizeof(comparisons) / sizeof(comparisons[0]); ++n) {
-        reset();
-        scenario = UNADVERTISED_IDLE;
-        repeat_raw = comparisons[n].repeat_raw;
-        configuration_raw = comparisons[n].config_raw;
-        repeat_byte = comparisons[n].alternate;
-        configuration_byte = comparisons[n].configuration;
-        corrupt_guards = comparisons[n].guards;
-        corrupt_probe = comparisons[n].probe;
-        UvcAlternate alternate;
-        bool video_changed = true;
-        assert(receive_av(42, &mode, &alternate, &video_changed) == ISO_SUBMIT_FAILED);
-        assert(video_changed && av_recording.failed);
-        assert(diagnostic_reads == 2);
-        assert(strstr(diagnostic_log, comparisons[n].expected_log));
-        assert(strstr(diagnostic_log, "unadvertised alternate remains unusable"));
-        cleanup_test = true;
-        stop_video_stream(42, video_changed);
-        assert(!starts && !closes && !probes && !enables && !captures);
-        assert(idle_sets == 2 && cleanup_calls == 1);
-    }
     puts(
-        "PASS: actual startup: 35 readiness/preflight/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 14 checked video-idle cases, 15 independent comparison cases");
+        "PASS: actual startup: 35 readiness/preflight/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 22 checked IOS-idle/configuration cases");
 }
