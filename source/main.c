@@ -1414,7 +1414,9 @@ static IsoStop av_audio_prime(unsigned before)
     }
 }
 
-static void av_video_readback_diagnostic(s32 handle, const UvcMode *mode)
+enum { AV_VIDEO_UNADVERTISED = -2 };
+
+static bool av_video_readback_consistent(s32 handle, const UvcMode *mode)
 {
     /* No queues are live here. Separate cache lines distinguish replies from stale scratch. */
     uint8_t primary = probe[0];
@@ -1429,14 +1431,18 @@ static void av_video_readback_diagnostic(s32 handle, const UvcMode *mode)
         if (alternate[n] != 0xa5) alternate_guard = false;
         if (configuration[n] != 0x5a) configuration_guard = false;
     }
-    report("A/V alternate comparison (diagnostic only): interface=%u primary=%u "
+    report("A/V alternate comparison: interface=%u primary=%u "
            "repeat_raw=%ld repeat_payload=%d repeat_byte=%u "
            "config_raw=%ld config_payload=%d config_byte=%u expected_config=%u "
-           "tail_guards=%u/%u probe_unchanged=%u; original alternate remains rejected.\n",
+           "tail_guards=%u/%u probe_unchanged=%u; unadvertised alternate remains unusable.\n",
            mode->interface, primary, (long)repeated, uvc_control_payload_length(repeated, 1),
            repeated_byte, (long)configured, uvc_control_payload_length(configured, 1),
            configuration[0], mode->configuration, alternate_guard, configuration_guard,
            probe[0] == primary);
+    return uvc_control_payload_length(repeated, 1) == 1 && repeated_byte == primary
+           && uvc_control_payload_length(configured, 1) == 1 && mode->configuration != 0
+           && configuration[0] == mode->configuration && alternate_guard && configuration_guard
+           && probe[0] == primary;
 }
 
 static int av_video_alternate(s32 handle, const UvcMode *mode)
@@ -1450,21 +1456,23 @@ static int av_video_alternate(s32 handle, const UvcMode *mode)
     if (!probe[0]) return 0;
     for (size_t n = 0; n < mode->alt_count; ++n)
         if (mode->alts[n].number == probe[0]) return probe[0];
-    report("A/V GET_INTERFACE returned unadvertised alternate=%u; video not reset.\n", probe[0]);
-    av_video_readback_diagnostic(handle, mode);
-    return -1;
+    report("A/V GET_INTERFACE returned unadvertised alternate=%u.\n", probe[0]);
+    return av_video_readback_consistent(handle, mode) ? AV_VIDEO_UNADVERTISED : -1;
 }
 
 static bool av_video_idle(s32 handle, const UvcMode *mode, bool *video_changed)
 {
     int alternate = av_video_alternate(handle, mode);
-    if (alternate < 0) return false;
+    if (alternate < 0 && alternate != AV_VIDEO_UNADVERTISED) return false;
     if (!alternate) {
-        /* GET_INTERFACE must agree with the descriptor before changing video state. */
         report("A/V video already idle; redundant alternate change skipped.\n");
         return true;
     }
-    report("A/V video alternate=%d; stopping it before negotiation.\n", alternate);
+    if (alternate == AV_VIDEO_UNADVERTISED)
+        report("A/V initializing video alternate 0 before audio; checked readback required.\n");
+    else
+        report("A/V video alternate=%d; stopping it before negotiation.\n", alternate);
+    /* One idle selection can establish state; an invalid readback cannot authorize audio. */
     *video_changed = true;
     return idle_camera(handle) && av_video_alternate(handle, mode) == 0;
 }
@@ -1589,7 +1597,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.10 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.11 - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");

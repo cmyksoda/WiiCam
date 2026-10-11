@@ -45,6 +45,7 @@ enum {
     INVALID_AFTER_CONTROLS,
     CONTROL_PCM_ONLY,
     UNADVERTISED_IDLE,
+    INITIALIZE_IDLE_SUCCESS,
     ACTIVE_IDLE_SUCCESS,
     ACTIVE_IDLE_AUDIO_FAIL,
     ACTIVE_IDLE_READBACK_FAIL,
@@ -76,7 +77,8 @@ static _Alignas(32) uint8_t config[64];
 static unsigned diagnostic_reads;
 static int repeat_raw, configuration_raw;
 static uint8_t repeat_byte, configuration_byte;
-static bool corrupt_guards, corrupt_probe;
+static unsigned corrupt_guards;
+static bool corrupt_probe;
 static char diagnostic_log[1024];
 static bool rejection_log_test;
 static char rejection_log[4096];
@@ -127,7 +129,7 @@ static s32 WC04_SetAlternate(s32 handle, uint8_t alternate)
             return 0;
         }
         if (!silent) {
-            assert(scenario >= ACTIVE_IDLE_SUCCESS && scenario <= ACTIVE_IDLE_READBACK_FAIL);
+            assert(scenario >= UNADVERTISED_IDLE && scenario <= ACTIVE_IDLE_READBACK_FAIL);
             assert(!starts && !av_audio.opened && !probes && !enables);
             event('Z');
             return 0;
@@ -156,24 +158,24 @@ static s32 USB_ReadCtrlMsg(s32 handle, uint8_t type, uint8_t request, uint16_t v
     if (data == config || data == config + 32) {
         assert(handle == 42 && !value && length == 1);
         assert(!starts && !av_audio.opened && !probes && !enables && !silent);
-        assert(diagnostic_reads < 2);
+        assert(diagnostic_reads < 4);
         uint8_t *bytes = data;
         if (data == config) {
-            assert(!diagnostic_reads && type == 0x81 && request == 10
+            assert(diagnostic_reads % 2 == 0 && type == 0x81 && request == 10
                    && index == expected_interface);
             for (unsigned n = 0; n < 32; ++n)
                 assert(bytes[n] == 0xa5);
             bytes[0] = repeat_byte;
-            if (corrupt_guards) bytes[31] = 0;
+            if (corrupt_guards & 1) bytes[31] = 0;
             if (corrupt_probe) probe[0] ^= 1;
             ++diagnostic_reads;
             return repeat_raw;
         }
-        assert(diagnostic_reads == 1 && type == 0x80 && request == 8 && !index);
+        assert(diagnostic_reads % 2 == 1 && type == 0x80 && request == 8 && !index);
         for (unsigned n = 0; n < 32; ++n)
             assert(bytes[n] == 0x5a);
         bytes[0] = configuration_byte;
-        if (corrupt_guards) bytes[1] = 0;
+        if (corrupt_guards & 2) bytes[1] = 0;
         ++diagnostic_reads;
         return configuration_raw;
     }
@@ -189,6 +191,7 @@ static s32 USB_ReadCtrlMsg(s32 handle, uint8_t type, uint8_t request, uint16_t v
     event('I');
     assert(!starts && !av_audio.opened && !probes && !enables && !silent);
     probe[0] = scenario == UNADVERTISED_IDLE ? 220 : 0;
+    if (scenario == INITIALIZE_IDLE_SUCCESS && idle_reads == 1) probe[0] = 220;
     if (scenario >= ACTIVE_IDLE_SUCCESS && scenario <= ACTIVE_IDLE_READBACK_FAIL)
         probe[0] = idle_reads == 1 || scenario == ACTIVE_IDLE_READBACK_FAIL ? 3 : 0;
     return scenario == IDLE_FAIL ? -7102 : 9;
@@ -218,7 +221,10 @@ bool uvc_negotiate(const UvcMode *mode, UvcAlternate *alternate, uint8_t data[UV
     else {
         assert(starts == 1 && av_audio.opened);
         assert(atomic_load(&av_audio.phase) == AV_VIDEO_PREPARING);
-        assert(idles == (scenario == ACTIVE_IDLE_SUCCESS ? 2u : 1u) && clock_ms >= 100);
+        assert(idles
+                   == (scenario == ACTIVE_IDLE_SUCCESS || scenario == INITIALIZE_IDLE_SUCCESS ? 2u
+                                                                                              : 1u)
+               && clock_ms >= 100);
         assert(audio_stream_position(&av_audio.stream) >= AUDIO_BLOCK_BYTES);
         if (scenario == FAIL_DURING_CONTROLS) atomic_store(&av_audio.stream.failed, true);
         if (scenario == CONTROL_PCM_ONLY) {
@@ -237,7 +243,10 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
     assert(handle == 42 && mode->width == 320 && mode->height == 240);
     assert(!enables && !probes);
     assert(idles
-           == (scenario == ACTIVE_IDLE_SUCCESS || scenario == ACTIVE_IDLE_AUDIO_FAIL ? 2u : 1u));
+           == (scenario == ACTIVE_IDLE_SUCCESS || scenario == ACTIVE_IDLE_AUDIO_FAIL
+                       || scenario == INITIALIZE_IDLE_SUCCESS
+                   ? 2u
+                   : 1u));
     event('A');
     ++starts;
     if (scenario == AUDIO_OPEN_FAIL || scenario == ACTIVE_IDLE_AUDIO_FAIL) return false;
@@ -541,6 +550,7 @@ int main(void)
         [INVALID_AFTER_CONTROLS] = ISO_COMPLETION_FAILED,
         [CONTROL_PCM_ONLY] = ISO_TIMEOUT,
         [UNADVERTISED_IDLE] = ISO_SUBMIT_FAILED,
+        [INITIALIZE_IDLE_SUCCESS] = ISO_RECORD_STOPPED,
         [ACTIVE_IDLE_SUCCESS] = ISO_RECORD_STOPPED,
         [ACTIVE_IDLE_AUDIO_FAIL] = ISO_SUBMIT_FAILED,
         [ACTIVE_IDLE_READBACK_FAIL] = ISO_SUBMIT_FAILED,
@@ -564,9 +574,11 @@ int main(void)
                == (expected[scenario] == ISO_SUBMIT_FAILED
                    || expected[scenario] == ISO_COMPLETION_FAILED
                    || expected[scenario] == ISO_TIMEOUT));
-        assert(diagnostic_reads == (scenario == UNADVERTISED_IDLE ? 2u : 0u));
-        bool idle_changed =
-            scenario >= ACTIVE_IDLE_SUCCESS && scenario <= ACTIVE_IDLE_READBACK_FAIL;
+        assert(diagnostic_reads
+               == (scenario == UNADVERTISED_IDLE         ? 4u
+                   : scenario == INITIALIZE_IDLE_SUCCESS ? 2u
+                                                         : 0u));
+        bool idle_changed = scenario >= UNADVERTISED_IDLE && scenario <= ACTIVE_IDLE_READBACK_FAIL;
         assert(!av_audio.opened && idle_sets == idle_changed);
         if (scenario == IDLE_FAIL || scenario == UNADVERTISED_IDLE
             || scenario == ACTIVE_IDLE_READBACK_FAIL) {
@@ -579,11 +591,13 @@ int main(void)
         bool activated = scenario == SUCCESS || scenario == ENABLE_FAIL
                          || scenario == FAIL_DURING_ENABLE || scenario == FAIL_AFTER_ENABLE
                          || scenario == FOUR_REJECTED || scenario == SLOW_VALID
-                         || scenario == ACTIVE_IDLE_SUCCESS || scenario >= RESTART_FAIL;
+                         || scenario == ACTIVE_IDLE_SUCCESS || scenario == INITIALIZE_IDLE_SUCCESS
+                         || scenario >= RESTART_FAIL;
         assert(enables == activated);
         bool recorded = scenario == SUCCESS || scenario == FAIL_AFTER_ENABLE
                         || scenario == FOUR_REJECTED || scenario == SLOW_VALID
-                        || scenario == ACTIVE_IDLE_SUCCESS || scenario == SLOW_ENABLE;
+                        || scenario == ACTIVE_IDLE_SUCCESS || scenario == INITIALIZE_IDLE_SUCCESS
+                        || scenario == SLOW_ENABLE;
         assert(captures == recorded);
         assert(pauses == (activated || scenario == PAUSE_FAIL));
         assert(restarts
@@ -649,7 +663,11 @@ int main(void)
         {9, 9, 0, 3, 0, true, 2, 1},      {9, 9, 0, 3, 3, false, 2, 1},
         {9, 8, 0, 3, 0, false, 2, 1},     {9, 9, -4, 3, 0, false, 1, 1},
         {9, -7102, 0, 3, 0, false, 2, 1}, {9, 9, 0, 255, 0, false, 1, 0},
-        {9, 9, 0, 220, 0, false, 1, 0},   {9, 9, 0, 3, 220, false, 2, 1},
+        {9, 9, 0, 220, 0, true, 2, 1},    {9, 9, 0, 3, 220, false, 2, 1},
+        {9, 9, 0, 220, 220, false, 2, 1}, {9, 9, 0, 220, 3, false, 2, 1},
+        {9, 9, -4, 220, 0, false, 1, 1},  {9, -7102, 0, 220, 0, false, 2, 1},
+        {9, 8, 0, 220, 0, false, 2, 1},   {9, 1, 0, 220, 0, false, 2, 1},
+        {9, 10, 0, 220, 0, false, 2, 1},  {9, 9, 0, 255, 0, true, 2, 1},
     };
 
     for (unsigned n = 0; n < sizeof(idle_cases) / sizeof(idle_cases[0]); ++n) {
@@ -661,11 +679,12 @@ int main(void)
         idle_alternate[1] = idle_cases[n].second_alternate;
         idle_set_result = idle_cases[n].set_result;
         UvcMode checked_mode = mode;
-        if (n == 11) expected_interface = checked_mode.interface = 7;
+        if (n == 11 || n == 21) expected_interface = checked_mode.interface = 7;
+        if (n == 21) repeat_byte = 255;
         bool video_changed = false;
         assert(av_video_idle(42, &checked_mode, &video_changed) == idle_cases[n].expected);
         assert(video_changed == (idle_cases[n].sets != 0));
-        assert(diagnostic_reads == (n >= 11 ? 2u : 0u));
+        assert(diagnostic_reads == (n == 14 ? 4u : n >= 11 ? 2u : 0u));
         assert(idle_reads == idle_cases[n].reads && idle_sets == idle_cases[n].sets);
         assert(!starts && !probes && !enables && !captures && !closes);
     }
@@ -679,10 +698,21 @@ int main(void)
     assert(!av_video_idle(42, &oversized, &video_changed));
     assert(idle_reads == 1 && !idle_sets && !video_changed);
 
+    reset();
+    idle_unit_test = true;
+    idle_raw[0] = 9;
+    idle_alternate[0] = 220;
+    UvcMode unconfigured = mode;
+    configuration_byte = unconfigured.configuration = 0;
+    video_changed = false;
+    assert(!av_video_idle(42, &unconfigured, &video_changed));
+    assert(idle_reads == 1 && diagnostic_reads == 2 && !idle_sets && !video_changed);
+
     const struct {
         int repeat_raw, config_raw;
         uint8_t alternate, configuration;
-        bool guards, probe;
+        unsigned guards;
+        bool probe;
         const char *expected_log;
     } comparisons[] = {
         {9, 9, 220, 1, false, false, "repeat_raw=9 repeat_payload=1 repeat_byte=220"},
@@ -690,8 +720,16 @@ int main(void)
         {-7102, 9, 165, 1, false, false, "repeat_raw=-7102 repeat_payload=-7102 repeat_byte=165"},
         {8, -4, 165, 90, false, false, "config_raw=-4 config_payload=-4 config_byte=90"},
         {9, 9, 220, 2, false, false, "config_byte=2 expected_config=1"},
-        {9, 9, 220, 1, true, false, "tail_guards=0/0 probe_unchanged=1"},
+        {9, 9, 220, 1, 3, false, "tail_guards=0/0 probe_unchanged=1"},
         {9, 9, 220, 1, false, true, "tail_guards=1/1 probe_unchanged=0"},
+        {8, 9, 220, 1, false, false, "repeat_raw=8 repeat_payload=0"},
+        {10, 9, 220, 1, false, false, "repeat_raw=10 repeat_payload=-1"},
+        {9, 8, 220, 1, false, false, "config_raw=8 config_payload=0"},
+        {9, 10, 220, 1, false, false, "config_raw=10 config_payload=-1"},
+        {9, -4, 220, 1, false, false, "config_raw=-4 config_payload=-4"},
+        {9, 9, 220, 0, false, false, "config_byte=0 expected_config=1"},
+        {9, 9, 220, 1, 1, false, "tail_guards=0/1 probe_unchanged=1"},
+        {9, 9, 220, 1, 2, false, "tail_guards=1/0 probe_unchanged=1"},
     };
 
     for (unsigned n = 0; n < sizeof(comparisons) / sizeof(comparisons[0]); ++n) {
@@ -706,14 +744,15 @@ int main(void)
         UvcAlternate alternate;
         bool video_changed = true;
         assert(receive_av(42, &mode, &alternate, &video_changed) == ISO_SUBMIT_FAILED);
-        assert(!video_changed && av_recording.failed && diagnostic_reads == 2);
+        assert(video_changed == (n == 0) && av_recording.failed);
+        assert(diagnostic_reads == (n == 0 ? 4u : 2u));
         assert(strstr(diagnostic_log, comparisons[n].expected_log));
-        assert(strstr(diagnostic_log, "original alternate remains rejected"));
+        assert(strstr(diagnostic_log, "unadvertised alternate remains unusable"));
         cleanup_test = true;
         stop_video_stream(42, video_changed);
-        assert(!starts && !closes && !probes && !enables && !captures && !idle_sets
-               && !cleanup_calls);
+        assert(!starts && !closes && !probes && !enables && !captures);
+        assert(idle_sets == (n == 0 ? 2u : 0u) && cleanup_calls == (n == 0));
     }
     puts(
-        "PASS: actual startup: 35 readiness/preflight/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 15 checked video-idle cases, 7 diagnostic comparison cases");
+        "PASS: actual startup: 36 readiness/preflight/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 24 checked video-idle cases, 15 independent comparison cases");
 }
