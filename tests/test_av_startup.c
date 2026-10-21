@@ -230,7 +230,8 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
     assert(!enables && !probes && !probe_calls && !committed && !idle_sets);
     assert(scenario != RESTART_REQUIRED && scenario != POISONED && scenario != UNPARKED);
     assert(usb_session.video == 42 && !usb_session.audio_poisoned);
-    assert(usb_session.video_changed == parked_run && usb_session.microphone_selected == parked_run);
+    assert(usb_session.video_changed == parked_run
+           && usb_session.microphone_selected == parked_run);
     event('A');
     ++starts;
     if (scenario == AUDIO_OPEN_FAIL) return false;
@@ -275,8 +276,7 @@ static int LWP_CreateThread(lwp_t *thread, void *(*entry)(void *), void *context
     assert(av_audio.handle == 43 && av_audio.mode.interface == 3 && av_audio.mode.endpoint == 0x84);
     assert(!atomic_load(&av_audio.stream.failed) && !audio_stream_position(&av_audio.stream));
     assert(!av_audio.stream.bytes && !av_audio.stream.packets && !av_audio.stream.rejected);
-    assert(!atomic_load(&av_audio.stop) && !atomic_load(&av_audio.done)
-           && !atomic_load(&av_audio.last_ms));
+    assert(!atomic_load(&av_audio.stop) && !atomic_load(&av_audio.last_ms));
     for (unsigned n = 0; n < ISO_QUEUE_DEPTH; ++n) {
         assert(!av_audio.queue.slots[n].pending);
         assert(av_audio.queue.slots[n].data == audio_data + n * ISO_DATA_BYTES);
@@ -489,7 +489,8 @@ static void test_rejections(void)
             unsigned before = av_audio.stream.rejected;
             ++av_audio.queue.consumed;
             assert(av_audio_consume(&av_audio, &batch) == (test >= 2));
-            assert(av_audio.stream.rejected - before == (test == 0 ? round % 10 == 0 : test == 1 ? 16u : 1u));
+            assert(av_audio.stream.rejected - before
+                   == (test == 0 ? round % 10 == 0 : test == 1 ? 16u : 1u));
             if (test == 1) {
                 assert(!audio_stream_position(&av_audio.stream));
                 assert(!audio_stream_received(&av_audio.stream));
@@ -646,7 +647,8 @@ int main(void)
         assert(cleanup_calls == video_changed);
         assert(idle_sets == (unsigned)video_changed);
         if (video_changed)
-            assert(usb_session.video_changed && usb_session.video_idle && usb_session.audio_poisoned);
+            assert(usb_session.video_changed && usb_session.video_idle
+                   && usb_session.audio_poisoned);
         if (scenario == EMPTY || scenario == PARTIAL) assert(clock_ms == 1000);
         if (scenario == INVALID)
             assert(av_audio.stream.rejected == 1 && !audio_stream_position(&av_audio.stream));
@@ -761,7 +763,8 @@ int main(void)
     UvcAlternate taken_alt;
     assert(!take_parked_camera(640, 480, &handle, &taken, &taken_alt) && usb_session.video_parked);
     assert(take_parked_camera(320, 240, &handle, &taken, &taken_alt) && !usb_session.video_parked);
-    assert(handle == 42 && taken.width == 320 && taken_alt.number == 3 && taken_alt.endpoint == 0x81);
+    assert(handle == 42 && taken.width == 320 && taken_alt.number == 3
+           && taken_alt.endpoint == 0x81);
     assert(!take_parked_camera(320, 240, &handle, &taken, &taken_alt));
     assert(!parked_elsewhere(640, 480, status, sizeof(status)));
     assert(sound_needs_restart(320, 240, status, sizeof(status)));

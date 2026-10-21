@@ -35,6 +35,9 @@
 #define FRAME_TIMEOUT_SECONDS 10
 #define AV_RATE_SETTLE_MS 50
 #define CONFIG_CAPACITY CAMERA_CONFIG_CAPACITY
+#define VIDEO_DIRECTORY "sd:/wc04-camera/videos"
+#define PHOTO_DIRECTORY "sd:/DCIM/100WC04"
+#define READY_STATUS "Open viewfinder to start the camera."
 _Static_assert(UVC_PROBE_LENGTH <= 32, "probe must fit reserved MEM2 bank");
 
 static uint8_t *config;
@@ -71,7 +74,7 @@ typedef struct {
     AudioStream stream;
     IsoQueue queue;
     lwp_t thread;
-    atomic_bool stop, done;
+    atomic_bool stop;
     atomic_uint last_ms;
     uint64_t start;
     IsoStop reason;
@@ -505,6 +508,7 @@ static void *preview_worker(void *context)
 {
     Capture *capture = context;
     uint64_t last_draw = 0;
+
     while (!atomic_load_explicit(&capture->worker_stop, memory_order_acquire)) {
         bool have_frame = preview_take(&capture->preview);
         if (have_frame) {
@@ -518,14 +522,14 @@ static void *preview_worker(void *context)
                 unsigned state =
                     atomic_load_explicit(&capture->record_control.state, memory_order_acquire);
                 if (record_control_begin(&capture->record_control)) {
-                    bool ready = ensure_directory("sd:/wc04-camera/videos");
+                    bool ready = ensure_directory(VIDEO_DIRECTORY);
                     if (ready && capture->audio_mode)
-                        ready = av_recorder_start(&av_recording, "sd:/wc04-camera/videos",
+                        ready = av_recorder_start(&av_recording, VIDEO_DIRECTORY,
                                                   capture->mode->width, capture->mode->height,
                                                   capture->preview.jpeg, capture->preview.length);
                     else if (ready)
                         ready =
-                            recorder_start(&recording, "sd:/wc04-camera/videos",
+                            recorder_start(&recording, VIDEO_DIRECTORY,
                                            capture->mode->width, capture->mode->height, elapsed);
                     if (!ready) {
                         if (capture->audio_mode)
@@ -554,6 +558,7 @@ static void *preview_worker(void *context)
                 ++capture->rejected;
             preview_finish(&capture->preview, decoded);
         }
+
         if (capture->audio_mode) {
             unsigned state = atomic_load(&capture->record_control.state);
             if (state == RECORD_ACTIVE) {
@@ -563,6 +568,7 @@ static void *preview_worker(void *context)
             } else if (!av_recording.active)
                 audio_stream_discard(&av_audio.stream);
         }
+
         if (atomic_load_explicit(&capture->worker_stop, memory_order_acquire)) break;
         uint64_t now = gettime();
         if (!last_draw || ticks_to_millisecs(now - last_draw) >= 66) {
@@ -590,6 +596,7 @@ static void *preview_worker(void *context)
         }
         if (!have_frame) usleep(1000);
     }
+
     /* Only this worker writes the video; finalize before its join returns. */
     if (capture->audio_mode && av_recording.active)
         av_recorder_stop(&av_recording, capture->audio_end, audio_stream_valid(&av_audio.stream));
@@ -757,8 +764,9 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
     const UvcFrame *frame = &capture.frame;
     const UvcStats *stats = &frame->stats;
     report("Viewfinder closed: %s after %llu ms; %u frames decoded, %u dropped, %u undecodable.\n",
-           stop_description(stop), (unsigned long long)ticks_to_millisecs(gettime() - capture.start),
-           capture.decoded, frame->dropped, capture.rejected);
+           stop_description(stop),
+           (unsigned long long)ticks_to_millisecs(gettime() - capture.start), capture.decoded,
+           frame->dropped, capture.rejected);
     if (stats->header_only && !stats->payload_bytes && !stats->bad_headers)
         report("Only UVC headers received; no image payload reached the decoder.\n");
     if (capture.audio_mode && av_recording.saved)
@@ -917,7 +925,6 @@ static void *av_audio_worker(void *context)
                             .stopping = av_audio_stopping,
                             .cancel = av_audio_cancel};
     iso_queue_run(&audio->queue, &hooks, audio);
-    atomic_store(&audio->done, true);
     return NULL;
 }
 
@@ -951,7 +958,6 @@ static bool av_audio_queue_start(MicRateResult rate)
     av_audio.opened = true;
     av_audio.natural_drain = true;
     atomic_init(&av_audio.stop, false);
-    atomic_init(&av_audio.done, false);
     atomic_init(&av_audio.last_ms, 0);
     audio_stream_init(&av_audio.stream, rate);
     iso_queue_init(&av_audio.queue, audio_iso_data, audio_iso_sizes, mode.packet_capacity);
@@ -968,7 +974,6 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
 {
     memset(&av_audio, 0, sizeof(av_audio));
     atomic_init(&av_audio.stop, false);
-    atomic_init(&av_audio.done, false);
     atomic_init(&av_audio.last_ms, 0);
     bool reused = usb_session.microphone_selected;
     Microphone microphone = {.handle = usb_session.microphone,
@@ -991,7 +996,6 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
     }
     uint64_t configured = gettime();
     audio_stream_init(&av_audio.stream, rate);
-    /* Keep the 0.2.4 interval fixed while isolating video-interface setup. */
     if (rate == MIC_RATE_FAILED || exit_requested
         || (!reused && rate == MIC_RATE_UNREADABLE && !av_audio_wait_rate(configured))) {
         if (rate == MIC_RATE_FAILED) report("Microphone alternate or rate setup failed.\n");
@@ -1102,7 +1106,8 @@ static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt, bo
         return ISO_SUBMIT_FAILED;
     }
     draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height,
-                screen_info.audio ? "Checking microphone - B cancels" : "Starting camera - B cancels");
+                screen_info.audio ? "Checking microphone - B cancels"
+                                  : "Starting camera - B cancels");
     if (!av_audio_start(handle, mode)) {
         av_recording.failed = true;
         return ISO_SUBMIT_FAILED;
@@ -1144,11 +1149,11 @@ static IsoStop run_camera(s32 handle, UvcMode *mode, UvcAlternate *alt, bool par
 
 static bool save_photo(unsigned width, unsigned height, char path[80])
 {
-    if (!mounted || !ensure_directory("sd:/DCIM") || !ensure_directory("sd:/DCIM/100WC04")) {
+    if (!mounted || !ensure_directory("sd:/DCIM") || !ensure_directory(PHOTO_DIRECTORY)) {
         report("SD photo directory unavailable.\n");
         return false;
     }
-    FILE *file = storage_create("sd:/DCIM/100WC04", "WC04", "JPG", path, 80);
+    FILE *file = storage_create(PHOTO_DIRECTORY, "WC04", "JPG", path, 80);
     if (!file) {
         report("Photo creation failed: %s\n", strerror(errno));
         return false;
@@ -1169,11 +1174,13 @@ static bool play_clip(const char *path, unsigned width, unsigned height, ScreenI
     snprintf(status, sizeof(status), "Loading %s", name);
     draw_screen_info(SCREEN_REVIEW, rgb, width, height, &info);
     uint64_t start = gettime();
+
     if (!clip_open(&clip, path) || clip.width != width || clip.height != height) {
         report("Playback: %s did not open as a %ux%u WiiCam clip.\n", path, width, height);
         clip_close(&clip);
         return false;
     }
+
     size_t pcm_bytes = clip_audio(&clip, playback_pcm, sizeof(playback_pcm));
     for (size_t n = 0; n + 1 < pcm_bytes; n += 2) {
         uint8_t low = playback_pcm[n];
@@ -1182,6 +1189,7 @@ static bool play_clip(const char *path, unsigned width, unsigned height, ScreenI
     }
     unsigned load_ms = (unsigned)ticks_to_millisecs(gettime() - start);
     bool sound = pcm_bytes > 0;
+
     if (sound) {
         DCFlushRange(playback_pcm, pcm_bytes);
         ASND_Init();
@@ -1191,6 +1199,7 @@ static bool play_clip(const char *path, unsigned width, unsigned height, ScreenI
                 == SND_OK;
         if (!sound) ASND_End();
     }
+
     start = gettime();
     unsigned shown = clip.frames, drawn = 0, failed = 0;
     bool finished = false;
@@ -1222,6 +1231,7 @@ static bool play_clip(const char *path, unsigned width, unsigned height, ScreenI
                  seconds % 60, total / 60, total % 60);
         draw_screen_info(SCREEN_REVIEW, rgb, width, height, &info);
     }
+
     if (sound) {
         ASND_StopVoice(0);
         ASND_End();
@@ -1286,6 +1296,7 @@ int main(void)
     xfb[0] = SYS_AllocateFramebuffer(video);
     xfb[1] = SYS_AllocateFramebuffer(video);
     if (!xfb[0] || !xfb[1]) return 1;
+
     widescreen = CONF_GetAspectRatio() == CONF_ASPECT_16_9;
     VIDEO_Configure(video);
     VIDEO_SetBlack(FALSE);
@@ -1294,23 +1305,27 @@ int main(void)
     SYS_SetResetCallback(reset_pressed);
     SYS_SetPowerCallback(request_exit);
     WPAD_SetPowerButtonCallback(remote_power);
+
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
+
     report("\nWiiCam 0.2.24 - IOS %u\n", IOS_GetVersion());
     bool usb_ready = false;
     if (IOS_GetVersion() == 58)
         usb_ready = buffers_ready && USB_Initialize() >= 0;
     else
         report("Launch under IOS58. This app does not install/reload IOS.\n");
+
     unsigned width = 320, height = 240;
     char status[80];
     snprintf(status, sizeof(status), "%s",
              !usb_ready ? "Camera needs IOS58 and USB"
-             : mounted  ? "Open viewfinder to start the camera."
+             : mounted  ? READY_STATUS
                         : "No SD - preview only");
     bool menu = true, open_live = false;
     ScreenPage idle_page = SCREEN_MENU;
+
     while (!exit_requested) {
         if (menu) {
             draw_screen(idle_page, NULL, width, height, status);
@@ -1318,12 +1333,14 @@ int main(void)
         }
         uint32_t down = buttons();
         if (exit_requested) break;
+
         if (idle_page == SCREEN_NO_SIGNAL && (down & WPAD_BUTTON_B)) {
             idle_page = SCREEN_MENU;
-            snprintf(status, sizeof(status), "Open viewfinder to start the camera.");
+            snprintf(status, sizeof(status), READY_STATUS);
             menu = true;
             down = 0;
         }
+
         if (idle_page == SCREEN_MENU && (down & WPAD_BUTTON_PLUS)) {
             if (screen_info.audio) {
                 screen_info.audio = false;
@@ -1332,23 +1349,26 @@ int main(void)
                 screen_info.audio = true;
             else
                 screen_info.video = true;
-            snprintf(status, sizeof(status), "Open viewfinder to start the camera.");
+            snprintf(status, sizeof(status), READY_STATUS);
             menu = true;
         }
+
         if (idle_page == SCREEN_MENU && (down & (WPAD_BUTTON_LEFT | WPAD_BUTTON_RIGHT))) {
             screen_info.timer =
                 capture_timer_next(screen_info.timer, down & WPAD_BUTTON_LEFT ? -1 : 1);
             menu = true;
         }
+
         if (idle_page == SCREEN_MENU && (down & WPAD_BUTTON_1)) {
             VideoSize next = video_size_next(width, height, available_sizes);
             width = next.width;
             height = next.height;
             if (!parked_elsewhere(width, height, status, sizeof(status)))
-                snprintf(status, sizeof(status), "%ux%u selected - 2 refreshes camera source", width,
-                         height);
+                snprintf(status, sizeof(status), "%ux%u selected - 2 refreshes camera source",
+                         width, height);
             menu = true;
         }
+
         if (usb_ready && (open_live || (down & (WPAD_BUTTON_A | WPAD_BUTTON_B | WPAD_BUTTON_2)))) {
             bool scanning = !open_live && !(down & (WPAD_BUTTON_A | WPAD_BUTTON_B));
             open_live = false;
@@ -1358,6 +1378,7 @@ int main(void)
                 menu = false;
                 continue;
             }
+
             draw_screen(SCREEN_WAITING, NULL, width, height, "CONNECTING CAMERA");
             s32 handle;
             idle_page = SCREEN_NO_SIGNAL;
@@ -1372,14 +1393,16 @@ int main(void)
                 IsoStop result = run_camera(handle, &mode, &alt, parked, &video_changed);
                 if (!park_video_stream(&mode, &alt, result))
                     stop_video_stream(handle, video_changed);
+
                 snprintf(status, sizeof(status), "%s",
-                         result == ISO_CANCELLED ? "Open viewfinder to start the camera."
+                         result == ISO_CANCELLED ? READY_STATUS
                          : result == ISO_TIMEOUT ? "No frames - A retries, B menu"
                                                  : "Camera stopped - A retries, B menu");
                 USB_CloseDevice(&handle);
                 if (result == ISO_CANCELLED || result == ISO_RECORD_STOPPED
                     || result == ISO_PHOTO_READY)
                     idle_page = SCREEN_MENU;
+
                 if (screen_info.audio) {
                     if (av_recording.saved)
                         snprintf(status, sizeof(status), "Saved %s",
@@ -1399,12 +1422,14 @@ int main(void)
                     else if (result == ISO_RECORD_STOPPED)
                         snprintf(status, sizeof(status), "No video frames recorded");
                 }
+
                 bool clip_saved =
                     screen_info.audio ? av_recording.saved : screen_info.video && recording.saved;
                 /* B is labeled "Stop + menu", so only its stop skips the review. */
                 if (result == ISO_RECORD_STOPPED && clip_saved)
                     open_live = review(screen_info.audio ? av_recording.path : recording.path,
                                        width, height, status, sizeof(status));
+
                 if (result == ISO_PHOTO_READY) {
                     char path[80];
                     draw_screen(SCREEN_REVIEW, rgb, width, height, "Saving photo");
@@ -1421,6 +1446,7 @@ int main(void)
         }
         VIDEO_WaitVSync();
     }
+
     release_camera();
     if (usb_ready) USB_Deinitialize();
     if (log_file) fclose(log_file);

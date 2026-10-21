@@ -56,7 +56,8 @@ def export(source, destination):
                 or (audios and audios[0]['codec_name'] != 'aac')
                 or abs(float(output['format']['duration']) - duration) > 0.25):
             raise ValueError('MP4 stream or duration validation failed.')
-        run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(temporary), '-f', 'null', '-'])
+        run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(temporary),
+             '-f', 'null', '-'])
         os.link(temporary, destination)
     return destination
 

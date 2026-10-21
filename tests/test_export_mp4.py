@@ -61,7 +61,8 @@ class ExportTests(unittest.TestCase):
                 audio.writeframes(b'\x00\x00' * round(duration * 16000))
             source = directory / 'pcm.avi'
             subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(video), '-i', str(wav),
-                            '-c:v', 'copy', '-c:a', 'pcm_s16le', '-shortest', str(source)], check=True)
+                            '-c:v', 'copy', '-c:a', 'pcm_s16le', '-shortest', str(source)],
+                           check=True)
             target = directory / 'audio.mp4'
             exporter.export(source, target)
             metadata = exporter.probe(target)

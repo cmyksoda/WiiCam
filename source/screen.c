@@ -238,6 +238,7 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
     const unsigned cyan = 0x00ffff, magenta = 0xff00ff, yellow = 0xffff00;
     int w = (int)logical_width, left = (w - 544) / 2, right = left + 544;
     memset(canvas, 0, sizeof(canvas));
+
     int title_x = left, title_top = font(28)['W' - 32].y;
     const char *title = "WiiCam";
     for (unsigned n = 0; title[n]; ++n) {
@@ -245,6 +246,7 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
         text(title_x, 40 - title_top, glyph, 28, n < 3 ? cyan : white);
         title_x += text_width(glyph, 28);
     }
+
     const char *heading = page == SCREEN_MENU        ? (i->sd ? "SD ready" : "No SD")
                           : page == SCREEN_REVIEW    ? (i->playing ? "Playing"
                                                         : i->video ? "Video review"
@@ -261,15 +263,18 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
              : page == SCREEN_NO_SIGNAL ? yellow
                                         : accent);
     text_top(right - text_right_edge("v0.2.24", 15), 424, "v0.2.24", 15, gray);
+
     if (page == SCREEN_MENU) {
         unsigned action_fill = i->refreshing ? line : cyan;
         unsigned action_ink = i->refreshing ? 0x777777 : 0;
         round_box(left, 106, 544, 90, 3, action_fill);
         key(left + 28, 151, "A", action_fill, action_ink, action_ink);
         text_center_y(left + 55, 151, "Open viewfinder", 25, action_ink);
+
         round_box(left, 223, 544, 1, 0, line);
         round_box(left + 181, 237, 1, 59, 0, line);
         round_box(left + 362, 237, 1, 59, 0, line);
+
         key(left + 14, 250, "+", 0, magenta, magenta);
         text_center_y(left + 39, 250, "Mode", 18, gray);
         text_top(left, 277,
@@ -277,11 +282,13 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
                  : i->video ? "Video"
                             : "Photo",
                  22, white);
+
         key(left + 206, 250, "1", 0, yellow, yellow);
         text_center_y(left + 232, 250, "Size", 18, gray);
         char size[40], timer[40];
         snprintf(size, sizeof(size), "%u x %u", width, height);
         text_top(left + 194, 277, size, 22, white);
+
         text_center_y(left + 377, 250, i->video ? "Recording limit" : "Left / Right", 18, gray);
         if (i->video)
             snprintf(timer, sizeof(timer), "60s / 128MiB");
@@ -290,6 +297,7 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
         else
             snprintf(timer, sizeof(timer), "Timer off");
         text_top(left + 377, 277, timer, i->video ? 18 : 22, white);
+
         round_box(left, 315, 544, 1, 0, line);
         key(left + 14, 346, "2", 0, i->refreshing ? yellow : gray, i->refreshing ? yellow : gray);
         text_center_y(left + 40, 346, "Refresh camera source", 20, i->refreshing ? yellow : white);
@@ -297,12 +305,14 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
             loading_circle(right - 14, 346, i->refresh_phase, yellow);
         else
             refresh_arrow(right - 14, 346);
+
         status_line(left, 374, 544,
                     i->status && *i->status ? i->status : "Open viewfinder to start the camera.",
                     gray, false);
         home(left, 420);
         return;
     }
+
     int picture = (w - 360) / 2;
     image_rgb(ui_bars, 360, 270, picture, 99);
     for (unsigned n = 0; n < 4; ++n) {
@@ -315,12 +325,14 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
             pixel(x + dx, y + dy * at, accent, 255);
         }
     }
+
     if (i->countdown && page == SCREEN_LIVE) {
         for (int y = 0; y < 48; ++y)
             for (int x = 0; x < 56; ++x)
                 countdown_pixel(canvas + ((309 + y) * CANVAS_WIDTH + picture + 292 + x) * 3, x, y,
                                 i->countdown);
     }
+
     char status[100];
     if (i->status && *i->status)
         snprintf(status, sizeof(status), "%s", i->status);
@@ -344,6 +356,7 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
     else
         snprintf(status, sizeof(status), "%u x %u  |  Timer off  |  %s", width, height,
                  i->sd ? "SD ready" : "No SD");
+
     if (page == SCREEN_REVIEW && (i->can_play || i->can_delete)) {
         unsigned ink = i->confirm_delete ? magenta : white;
         int delete_x = right - text_width("Delete", 18), actions = delete_x - 23;
@@ -358,6 +371,7 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
                     false);
     } else
         status_line(left, 384, 544, status, i->recording ? magenta : gray, true);
+
     if (page == SCREEN_NO_SIGNAL || page == SCREEN_WAITING)
         text_top(left, 419, "No capture", 18, gray);
     else if (!i->sd)
@@ -371,6 +385,7 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
                                             : "Take photo",
                       18, white);
     }
+
     int bx = left + (i->playing ? 14 : i->recording ? 128 : 221);
     key(bx, 429, "B", 0, magenta, magenta);
     text_center_y(bx + (i->recording ? 21 : 23), 429,
@@ -388,6 +403,7 @@ void screen_draw(Screen *s, ScreenPage page, const uint8_t *rgb, unsigned width,
     if (!s || !s->pixels || !info || !s->width || s->width > 864 || (s->width & 1) || !s->height
         || s->height > 576 || s->stride < s->width || (s->stride & 1))
         return;
+
     logical_width = s->widescreen ? 854 : 640;
     char key_string[256];
     snprintf(key_string, sizeof(key_string),
@@ -396,6 +412,7 @@ void screen_draw(Screen *s, ScreenPage page, const uint8_t *rgb, unsigned width,
              info->shutter, info->timer, info->countdown, info->seconds, info->refreshing,
              info->refresh_phase, info->audio, info->can_play, info->can_delete,
              info->confirm_delete, info->playing, info->status ? info->status : "");
+
     if (strcmp(cached_key, key_string)) {
         compose(page, width, height, info);
         for (unsigned y = 0; y < s->height; ++y)
@@ -407,9 +424,11 @@ void screen_draw(Screen *s, ScreenPage page, const uint8_t *rgb, unsigned width,
             }
         snprintf(cached_key, sizeof(cached_key), "%s", key_string);
     }
+
     for (unsigned y = 0; y < s->height; ++y)
         memcpy(s->pixels + y * s->stride / 2, chrome + y * s->width / 2, s->width * 2);
     if (!rgb || !width || !height || page == SCREEN_MENU || page == SCREEN_NO_SIGNAL) return;
+
     unsigned left = (logical_width - 360) / 2;
     unsigned fit_width = 360, fit_height = 270;
     if ((uint64_t)width * 270 > (uint64_t)height * 360)
@@ -421,6 +440,7 @@ void screen_draw(Screen *s, ScreenPage page, const uint8_t *rgb, unsigned width,
     unsigned x1 = ((fit_left + fit_width) * s->width / logical_width) & ~1u;
     unsigned y0 = fit_top * s->height / 480, y1 = (fit_top + fit_height) * s->height / 480;
     if (x1 <= x0 || y1 <= y0) return;
+
     unsigned view_x0 = (left * s->width / logical_width) & ~1u;
     unsigned view_x1 = ((left + 360) * s->width / logical_width) & ~1u;
     const uint8_t black[3] = {0, 0, 0};

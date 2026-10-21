@@ -79,6 +79,7 @@ UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned target, un
         || uvc_le16(data + 2) != length || target > 255)
         return UVC_MALFORMED;
     if (!video_size_allowed(width, height)) return UVC_NO_MODE;
+
     /* Validate the whole descriptor walk before subsequent bounded passes. */
     for (size_t offset = 9; offset < length; offset += data[offset]) {
         if (length - offset < 2 || data[offset] < 2 || data[offset] > length - offset)
@@ -87,6 +88,7 @@ UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned target, un
         if ((d[1] == 4 && d[0] < 9) || (d[1] == 5 && d[0] < 7) || (d[1] == 0x24 && d[0] < 3))
             return UVC_MALFORMED;
     }
+
     unsigned interface = 256, alternate = 0, subclass = 0, association = 0;
     bool video = false;
     for (size_t offset = 9; offset < length; offset += data[offset]) {
@@ -109,10 +111,12 @@ UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned target, un
             }
         }
     }
+
     if (association != 1) return UVC_ASSOCIATION;
     if (mode->version != 0x100) return UVC_VERSION;
     mode->configuration = data[5];
     mode->interface = (uint8_t)target;
+
     unsigned format = 0, headers = 0, zero_alts = 0;
     bool found = false, progressive = false;
     uint8_t formats[256] = {0}, frames[256] = {0};
@@ -190,6 +194,7 @@ UvcParseResult uvc_parse(const uint8_t *data, size_t length, unsigned target, un
     }
     if (headers != 1 || zero_alts != 1) return UVC_MALFORMED;
     if (!found) return UVC_NO_MODE;
+
     bool seen_alts[256] = {false};
     for (size_t offset = 9; offset < length; offset += data[offset]) {
         const uint8_t *d = data + offset;

@@ -15,7 +15,8 @@ for width in (320, 640):
     assert int(stream['nb_frames']) == 10
     assert abs(float(data['format']['duration'])-2) < .001
     assert stream['avg_frame_rate'] == '5/1'
-    subprocess.run(['ffmpeg', '-v', 'error', '-xerror', '-i', str(path), '-f', 'null', '-'], check=True)
+    subprocess.run(['ffmpeg', '-v', 'error', '-xerror', '-i', str(path), '-f', 'null', '-'],
+                   check=True)
     # Exercise the index with a seek as well as sequential decoding.
     subprocess.run(['ffmpeg', '-v', 'error', '-xerror', '-ss', '1', '-i', str(path),
                     '-frames:v', '1', '-f', 'null', '-'], check=True)

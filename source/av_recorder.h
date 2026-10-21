@@ -9,7 +9,7 @@ typedef struct {
     uint8_t *jpeg;
     size_t length;
     char path[128];
-    unsigned anchor, frames_received, repeated, source_generation, written_generation;
+    unsigned anchor, repeated, source_generation, written_generation;
     bool active, failed, limited, saved;
 } AvRecorder;
 

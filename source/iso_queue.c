@@ -98,7 +98,7 @@ IsoStop iso_queue_run(IsoQueue *queue, const IsoHooks *hooks, void *context)
             hooks->poll(context);
             hooks->idle(context);
         }
-        queue->drain_results[queue->drained++] = slot->result;
+        ++queue->drained;
         slot->pending = false;
     }
     return stop;

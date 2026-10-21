@@ -38,7 +38,6 @@ bool av_recorder_start(AvRecorder *r, const char *directory, unsigned width, uns
     memcpy(r->jpeg, jpeg, length);
     r->length = length;
     r->source_generation = 1;
-    r->frames_received = 1;
     r->active = true;
     return true;
 }
@@ -85,7 +84,6 @@ bool av_recorder_frame(AvRecorder *r, const uint8_t *jpeg, size_t length, unsign
     if (elapsed > UINT32_MAX / 2 || elapsed < r->avi.frames * AUDIO_BLOCK_BYTES) return true;
     memcpy(r->jpeg, jpeg, length);
     r->length = length;
-    ++r->frames_received;
     ++r->source_generation;
     return true;
 }

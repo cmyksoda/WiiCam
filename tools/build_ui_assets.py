@@ -92,8 +92,11 @@ for label in ('A', 'B', '+', '1', '2', 'HOME', '\u2212'):
                       (badge.height-mask.height)//2 + round(offset_y*badge_scale)))
     badge = badge.resize((badge_size, badge_size), Image.Resampling.LANCZOS)
     badges.extend(badge.tobytes())
-    badge_metrics.append({'label': label, 'optical_offset': [offset_x, offset_y], 'visible_bounds': badge.point(
-        lambda value: 255 if value >= 32 else 0).getbbox()})
+    badge_metrics.append({
+        'label': label,
+        'optical_offset': [offset_x, offset_y],
+        'visible_bounds': badge.point(lambda value: 255 if value >= 32 else 0).getbbox(),
+    })
 lines.append(f'#define UI_BADGE_SIZE {badge_size}')
 array('ui_badges', badges)
 (ROOT / 'build/ui-badges.json').write_text(json.dumps({
@@ -113,7 +116,8 @@ for number in range(1, 11):
     overlay.paste(mask, (round((112-mask.width)/2), round((96-mask.height)/2)))
     countdowns.extend(overlay.resize((56, 48), Image.Resampling.LANCZOS).tobytes())
 array('ui_countdown_ink', countdowns)
-bars = Image.open(ROOT / 'assets/color-bars.png').convert('RGB').resize((360, 270), Image.Resampling.NEAREST)
+bars = Image.open(ROOT / 'assets/color-bars.png').convert('RGB').resize(
+    (360, 270), Image.Resampling.NEAREST)
 array('ui_bars', bars.tobytes())
 output.write_text('\n'.join(lines) + '\n')
 font_data = font_path.read_bytes()

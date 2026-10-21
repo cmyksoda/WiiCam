@@ -66,7 +66,6 @@ def main():
     data = (APP / "boot.dol").read_bytes()
     validate_dol(data)
     (APP / "licenses/WC04-GPLv3.txt").write_bytes((ROOT / "LICENSE").read_bytes())
-    # Preserve the exact metadata bytes in the package.
     metadata = (APP / "meta.xml").read_bytes()
     version = re.search(rb"<version>([^<]+)</version>", metadata).group(1).decode()
     archive = ROOT / f"dist/WiiCam-{version}.zip"

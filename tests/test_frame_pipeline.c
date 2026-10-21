@@ -136,7 +136,7 @@ static void save_frame(const char *directory, unsigned width, size_t size)
 {
     preview_init(&preview, mailbox.bytes, sizeof(mailbox.bytes));
     preview_shutter(&preview);
-    assert(preview_offer(&preview, frame.data, frame.size));
+    assert(preview_offer_at(&preview, frame.data, frame.size, 0));
     assert(preview_take(&preview) && preview.length == size);
     assert(!memcmp(preview.jpeg, input, size));
     assert(photo_decode(preview.jpeg, preview.length, pixels, width, width * 3 / 4));
@@ -206,7 +206,7 @@ static void test_pipeline(void)
         assert(!feed(input, WC04_FRAME_CAPACITY + 8, 1024, 2));
         assert(frame.stats.overflow == 1);
         preview_init(&preview, mailbox.bytes, sizeof(mailbox.bytes));
-        assert(!preview_offer(&preview, input, WC04_FRAME_CAPACITY + 1));
+        assert(!preview_offer_at(&preview, input, WC04_FRAME_CAPACITY + 1, 0));
         assert(!preview_take(&preview) && !preview.length);
         assert(recorder_start(&recorder, directory, width, width * 3 / 4, 0));
         assert(!recorder_frame(&recorder, input, WC04_FRAME_CAPACITY + 1, 1));
@@ -222,7 +222,7 @@ static void test_pipeline(void)
         assert(frame.size == 9 && frame.stats.padding_bytes == 7);
         preview_init(&preview, mailbox.bytes, sizeof(mailbox.bytes));
         preview_shutter(&preview);
-        assert(preview_offer(&preview, frame.data, frame.size));
+        assert(preview_offer_at(&preview, frame.data, frame.size, 0));
         assert(!photo_decode(preview.jpeg, preview.length, pixels, width, width * 3 / 4));
         preview_finish(&preview, false);
         assert(!preview_photo_ready(&preview) && !preview_take(&preview));

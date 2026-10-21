@@ -217,10 +217,7 @@ static UacResult stream(const uint8_t *data, size_t length, unsigned target, uns
             endpoint = true;
         } else if (selected && d[1] == 0x25) {
             if (!endpoint || controls || d[0] != 7 || d[2] != 1) return UAC_MALFORMED;
-            mode->endpoint_controls = d[3];
             mode->frequency_control = (d[3] & 1) != 0;
-            mode->lock_units = d[4];
-            mode->lock_delay = uvc_le16(d + 5);
             if ((d[3] & 0x7c) || d[4] > 2) return UAC_NO_MODE;
             controls = true;
         }

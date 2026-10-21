@@ -37,7 +37,7 @@ typedef struct {
 typedef struct {
     IsoSlot slots[ISO_QUEUE_DEPTH];
     unsigned capacity, submitted, consumed, drained;
-    int failure, drain_results[ISO_QUEUE_DEPTH];
+    int failure;
 } IsoQueue;
 
 typedef struct {

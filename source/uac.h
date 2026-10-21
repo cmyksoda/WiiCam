@@ -11,8 +11,8 @@
 
 typedef struct {
     uint8_t control_interface, interface, alternate, endpoint, interval;
-    uint8_t channels, terminal, microphone, endpoint_controls, lock_units;
-    uint16_t packet_capacity, lock_delay;
+    uint8_t channels, terminal, microphone;
+    uint16_t packet_capacity;
     uint32_t rate, rates[UAC_MAX_RATES], minimum_rate, maximum_rate;
     unsigned rate_count;
     bool frequency_control;

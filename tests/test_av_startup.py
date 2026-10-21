@@ -42,8 +42,8 @@ with tempfile.TemporaryDirectory(prefix="wiicam-av-startup-") as directory:
     (work / "av_startup_under_test.h").write_text(code)
     subprocess.run(
         [*shlex.split(args.cc), "-std=c11", "-Wall", "-Wextra", "-Werror",
-         "-Isource", "-I" + directory, "source/audio_stream.c", "source/iso_queue.c", "source/uvc.c",
-         "tests/test_av_startup.c", "-o", str(work / "test")],
+         "-Isource", "-I" + directory, "source/audio_stream.c", "source/iso_queue.c",
+         "source/uvc.c", "tests/test_av_startup.c", "-o", str(work / "test")],
         cwd=root, check=True,
     )
     subprocess.run([str(work / "test")], cwd=root, check=True)

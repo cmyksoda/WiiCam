@@ -20,11 +20,6 @@ void preview_shutter(Preview *p)
     atomic_store_explicit(&p->shutter, true, memory_order_release);
 }
 
-bool preview_offer(Preview *p, const uint8_t *jpeg, size_t length)
-{
-    return preview_offer_at(p, jpeg, length, 0);
-}
-
 bool preview_offer_at(Preview *p, const uint8_t *jpeg, size_t length, unsigned position)
 {
     if (!length || length > p->capacity

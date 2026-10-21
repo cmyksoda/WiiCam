@@ -87,6 +87,7 @@ bool camera_find(const CameraEntry *entries, size_t count, unsigned width, unsig
                 report(ops, entry, "open failed");
                 continue;
             }
+
             memset(scratch, 0, CAMERA_IOS_PARAMETERS);
             uint8_t configuration = 0;
             int result = ops->parameters(ops->context, opened, scratch);
@@ -97,6 +98,7 @@ bool camera_find(const CameraEntry *entries, size_t count, unsigned width, unsig
                 ops->close(ops->context, opened);
                 continue;
             }
+
             /* Numeric descriptor metadata only; no strings, serials or image data. */
             snprintf(
                 detail, sizeof(detail),
@@ -105,12 +107,14 @@ bool camera_find(const CameraEntry *entries, size_t count, unsigned width, unsig
                 (unsigned)scratch[37], (unsigned)scratch[45], (unsigned)scratch[54],
                 (unsigned)scratch[57], (unsigned)scratch[58]);
             report(ops, entry, detail);
+
             const char *reason = describe(entry, scratch, &configuration);
             if (reason) {
                 report(ops, entry, reason);
                 ops->close(ops->context, opened);
                 continue;
             }
+
             memset(scratch, 0, CAMERA_CONFIG_CAPACITY);
             result = ops->read(ops->context, opened, 8, 0, 1, scratch);
             if (uvc_control_payload_length(result, 1) != 1 || scratch[0] != configuration) {
@@ -119,6 +123,7 @@ bool camera_find(const CameraEntry *entries, size_t count, unsigned width, unsig
                 ops->close(ops->context, opened);
                 continue;
             }
+
             memset(scratch, 0, CAMERA_CONFIG_CAPACITY);
             result = ops->read(ops->context, opened, 6, 0x0200, 9, scratch);
             unsigned length = uvc_le16(scratch + 2);
@@ -128,6 +133,7 @@ bool camera_find(const CameraEntry *entries, size_t count, unsigned width, unsig
                 ops->close(ops->context, opened);
                 continue;
             }
+
             memset(scratch, 0, CAMERA_CONFIG_CAPACITY);
             result = ops->read(ops->context, opened, 6, 0x0200, (uint16_t)length, scratch);
             if (uvc_control_payload_length(result, length) != (int)length
@@ -136,6 +142,7 @@ bool camera_find(const CameraEntry *entries, size_t count, unsigned width, unsig
                 ops->close(ops->context, opened);
                 continue;
             }
+
             UvcParseResult parsed =
                 uvc_parse(scratch, length, entry->interface, width, height, mode);
             if (parsed == UVC_LIMIT) report_limit(ops, entry, width, height, mode);

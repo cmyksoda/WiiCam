@@ -27,7 +27,8 @@ for n, name in enumerate(refresh_names):
     plate.paste(im, (x,y))
 plate.save('build/Refresh-runtime-host-QA.png')
 
-extra = ['live', 'shutter', 'waiting', 'signal-recording', 'menu-no-sd', 'menu-timer-10', 'live-640', 'menu-wide']
+extra = ['live', 'shutter', 'waiting', 'signal-recording', 'menu-no-sd', 'menu-timer-10',
+         'live-640', 'menu-wide']
 plate = Image.new('RGB', (1320, 2100), '#161616')
 draw = ImageDraw.Draw(plate)
 for n, name in enumerate(extra):

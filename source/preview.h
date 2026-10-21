@@ -20,7 +20,6 @@ typedef struct {
 void preview_init(Preview *preview, uint8_t *jpeg, size_t capacity);
 void preview_shutter(Preview *preview);
 /* Single producer. Busy frames are skipped, never overwrite decoder input. */
-bool preview_offer(Preview *preview, const uint8_t *jpeg, size_t length);
 bool preview_offer_at(Preview *preview, const uint8_t *jpeg, size_t length,
                       unsigned audio_position);
 /* Single consumer owns the JPEG until preview_finish. */

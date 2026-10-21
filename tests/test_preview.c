@@ -33,27 +33,27 @@ int main(void)
     uint8_t input[sizeof(storage)];
     memset(input, 7, sizeof(input));
     preview_init(&preview, storage, sizeof(storage));
-    assert(!preview_offer(&preview, input, 0));
-    assert(!preview_offer(&preview, input, sizeof(input) + 1));
+    assert(!preview_offer_at(&preview, input, 0, 0));
+    assert(!preview_offer_at(&preview, input, sizeof(input) + 1, 0));
     assert(!preview_take(&preview));
-    assert(preview_offer(&preview, input, sizeof(input)));
+    assert(preview_offer_at(&preview, input, sizeof(input), 0));
     preview_shutter(&preview);
     assert(preview_take(&preview) && !preview.save);
     input[0] = 8;
-    assert(!preview_offer(&preview, input, sizeof(input)));
+    assert(!preview_offer_at(&preview, input, sizeof(input), 0));
     assert(preview.jpeg[0] == 7);
     preview_finish(&preview, true);
     assert(!preview_photo_ready(&preview));
-    assert(preview_offer(&preview, input, sizeof(input)));
+    assert(preview_offer_at(&preview, input, sizeof(input), 0));
     assert(preview_take(&preview) && preview.save);
     preview_finish(&preview, false);
     assert(!preview_photo_ready(&preview));
-    assert(preview_offer(&preview, input, sizeof(input)));
+    assert(preview_offer_at(&preview, input, sizeof(input), 0));
     assert(preview_take(&preview) && preview.save);
     preview_finish(&preview, true);
     assert(preview_photo_ready(&preview));
     assert(!preview_take(&preview));
-    assert(!preview_offer(&preview, input, sizeof(input)));
+    assert(!preview_offer_at(&preview, input, sizeof(input), 0));
 
     preview_init(&preview, storage, sizeof(storage));
     pthread_t thread;
@@ -61,7 +61,7 @@ int main(void)
     for (unsigned i = 0; i < 2000; ++i) {
         memset(input, (uint8_t)i, sizeof(input));
         if (i == 1999) preview_shutter(&preview);
-        while (!preview_offer(&preview, input, sizeof(input)))
+        while (!preview_offer_at(&preview, input, sizeof(input), 0))
             sched_yield();
     }
     assert(pthread_join(thread, NULL) == 0);

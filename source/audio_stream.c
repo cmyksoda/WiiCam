@@ -114,7 +114,8 @@ bool audio_stream_valid(const AudioStream *s)
     if (atomic_load(&s->failed) || s->bytes < MIC_RATE * 2u || s->last_ms < s->first_ms)
         return false;
     uint64_t span = s->last_ms - s->first_ms;
-    uint64_t samples_ms = (s->bytes + s->concealed_bytes - s->first_length) * 1000 / (MIC_RATE * 2u);
+    uint64_t samples_ms =
+        (s->bytes + s->concealed_bytes - s->first_length) * 1000 / (MIC_RATE * 2u);
     uint64_t difference = span > samples_ms ? span - samples_ms : samples_ms - span;
     return difference <= 100 + span / 50;
 }
