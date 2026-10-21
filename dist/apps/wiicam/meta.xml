@@ -17,5 +17,5 @@ Photos are saved to SD:/DCIM/100WC04 and videos to SD:/wc04-camera/videos. Video
 
 Requires IOS58 and an SD card to save.
 
-Tested with the Ubisoft Hercules WC04 camera (photos and silent video) and a W2 webcam, USB ID 0c45:6366 (photos, video and sound at every size). Other UVC 1.0 MJPEG cameras may work.</long_description>
+Tested with the Ubisoft / Hercules WC04 camera (photos and silent video) and a W2 webcam, USB ID 0c45:6366 (photos, video and sound at every size). Other UVC 1.0 MJPEG cameras may work.</long_description>
 </app>
