@@ -262,7 +262,7 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
              page == SCREEN_MENU        ? gray
              : page == SCREEN_NO_SIGNAL ? yellow
                                         : accent);
-    text_top(right - text_right_edge("v0.2.24", 15), 424, "v0.2.24", 15, gray);
+    text_top(right - text_right_edge("v1.0.0-beta", 15), 424, "v1.0.0-beta", 15, gray);
 
     if (page == SCREEN_MENU) {
         unsigned action_fill = i->refreshing ? line : cyan;

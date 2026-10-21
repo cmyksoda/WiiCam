@@ -2,17 +2,20 @@
 <app version="1">
   <name>WiiCam</name>
   <coder>cmyksoda</coder>
-  <version>0.2.22</version>
-  <short_description>Cleanup test</short_description>
-  <long_description>0.2.22 local test: the microphone test mode and developer diagnostics are removed, and the SD card log is short. Everything else works as in 0.2.21. Choose Video + audio first after launching.
+  <version>1.0.0-beta</version>
+  <release_date>20261021</release_date>
+  <short_description>USB Camera Application</short_description>
+  <long_description>Take photos and record video with a USB camera. It can record sound, too.
 
-Take photos with a USB camera or record silent MJPEG video.
+In testing, sound works at every resolution. However, it only stays available at the size the camera first opened with. To record sound at another size, restart WiiCam; the menu tells you when.
 
-Choose 320 x 240 or 640 x 480, set a photo timer, or refresh the camera source using the menu.
+After a photo, or a video stopped with A, a review page opens: 1 plays the video back, and Minus twice deletes it.
+
+Choose a size from 160 x 120 up to 848 x 480 (depending on the camera), set a 3, 5 or 10 second photo timer, or refresh the camera source from the menu.
+
+Photos are saved to SD:/DCIM/100WC04 and videos to SD:/wc04-camera/videos. Videos are AVI files limited to 60 seconds or 128 MiB. Photos and videos can be viewed and edited in the Photo Channel.
 
 Requires IOS58 and an SD card to save.
 
-Supports the Ubisoft Hercules WC04 camera and selected UVC 1.0 MJPEG cameras.
-
-Video is limited to 60 seconds or 128 MiB. </long_description>
+Tested with the Ubisoft Hercules WC04 camera (photos and silent video) and a W2 webcam, USB ID 0c45:6366 (photos, video and sound at every size). Other UVC 1.0 MJPEG cameras may work.</long_description>
 </app>
