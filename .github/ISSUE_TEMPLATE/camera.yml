@@ -1,0 +1,96 @@
+name: Tell us about a camera
+description: You tried WiiCam with a USB camera; tell us what worked.
+labels: ["camera report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you! Every camera report helps fill in the README's Tested cameras table, whether everything worked or nothing did.
+
+  - type: input
+    id: camera
+    attributes:
+      label: Camera
+      description: Its brand and model, as written on the camera or its box.
+      placeholder: Logitech C270
+    validations:
+      required: true
+
+  - type: input
+    id: usb-id
+    attributes:
+      label: USB ID
+      description: Two four-digit codes like 0c45:6366. WiiCam's session log shows it on the "Candidate" lines, or on a PC run `lsusb` (Linux) or look in Device Manager (Windows).
+      placeholder: 0c45:6366
+
+  - type: input
+    id: version
+    attributes:
+      label: WiiCam version
+      description: It's at the bottom right of the menu.
+      placeholder: v1.0.0-beta
+    validations:
+      required: true
+
+  - type: dropdown
+    id: console
+    attributes:
+      label: Console
+      options:
+        - Wii
+        - Wii U (vWii)
+        - Wii mini
+    validations:
+      required: true
+
+  - type: dropdown
+    id: photo
+    attributes:
+      label: Photos
+      options:
+        - "Yes"
+        - "No"
+        - Didn't try
+    validations:
+      required: true
+
+  - type: dropdown
+    id: video
+    attributes:
+      label: Video
+      options:
+        - "Yes"
+        - "No"
+        - Didn't try
+    validations:
+      required: true
+
+  - type: dropdown
+    id: sound
+    attributes:
+      label: Video with sound
+      options:
+        - "Yes"
+        - "No"
+        - The camera has no microphone
+        - Didn't try
+    validations:
+      required: true
+
+  - type: input
+    id: sizes
+    attributes:
+      label: Sizes you tried
+      placeholder: 320 x 240, 640 x 480
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else?
+      description: Colors, frame rate, sound quality, or anything odd you noticed.
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Session log
+      description: WiiCam keeps a short log on your SD card at `wc04-camera/session.log`. Drag the file into this box, or paste the part from your session.

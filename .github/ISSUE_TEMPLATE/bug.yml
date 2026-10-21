@@ -1,0 +1,80 @@
+name: Report a bug
+description: Something in WiiCam doesn't work the way it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report this! The more of these you can fill in, the easier it is to find what went wrong.
+
+  - type: input
+    id: version
+    attributes:
+      label: WiiCam version
+      description: It's at the bottom right of the menu.
+      placeholder: v1.0.0-beta
+    validations:
+      required: true
+
+  - type: dropdown
+    id: console
+    attributes:
+      label: Console
+      options:
+        - Wii
+        - Wii U (vWii)
+        - Wii mini
+    validations:
+      required: true
+
+  - type: input
+    id: camera
+    attributes:
+      label: Camera
+      description: Its name, and its USB ID if you know it (for example 0c45:6366).
+      placeholder: Ubisoft / Hercules WC04
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Photo
+        - Video
+        - Video + audio
+        - Not sure, or it happens in every mode
+    validations:
+      required: true
+
+  - type: input
+    id: size
+    attributes:
+      label: Size
+      description: The size shown in the menu.
+      placeholder: 640 x 480
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you saw, and what you expected to happen instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can it be repeated?
+      description: The steps from launching WiiCam to the problem, if you know them.
+      placeholder: |
+        1. Launch WiiCam
+        2. Choose Video + audio
+        3. ...
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Session log
+      description: WiiCam keeps a short log on your SD card at `wc04-camera/session.log`. Drag the file into this box, or paste the last part of it.
