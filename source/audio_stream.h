@@ -15,8 +15,6 @@ typedef struct {
     atomic_bool failed;
     MicRateResult rate;
     unsigned packets, empty, rejected, smallest, largest, peak, first_length, gap_packets;
-    unsigned rejected_lengths[MIC_MAX_REJECTED_PACKETS];
-    unsigned rejected_indices[MIC_MAX_REJECTED_PACKETS];
     uint64_t bytes, concealed_bytes, first_ms, last_ms;
 } AudioStream;
 

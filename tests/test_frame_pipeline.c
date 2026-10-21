@@ -54,14 +54,13 @@ static void test_boundaries(void)
                 assert(frame.size == jpeg_size && frame.stats.complete == 1);
                 assert(frame.stats.padding_bytes == padding);
                 assert(frame.stats.normalized_frames == (padding != 0));
-                assert(frame.stats.accepted_mod8[(jpeg_size + padding) & 7] == 1);
-                assert(!frame.stats.invalid_jpeg && !frame.boundary_samples);
+                assert(!frame.stats.invalid_jpeg);
                 uint8_t duplicate[] = {2, 0x82};
                 assert(!uvc_packet(&frame, duplicate, sizeof(duplicate)));
                 assert(frame.stats.complete == 1);
             } else {
                 assert(frame.size == jpeg_size + padding);
-                assert(frame.stats.invalid_jpeg == 1 && frame.stats.missing_eoi == 1);
+                assert(frame.stats.invalid_jpeg == 1);
                 assert(!frame.stats.normalized_frames && !frame.stats.padding_bytes);
             }
             for (unsigned n = 0; n < padding; ++n) {
@@ -93,7 +92,7 @@ static void test_boundaries(void)
         assert(uvc_packet(&frame, next, sizeof(next)));
         assert(frame.stats.missing_eof == 1 && !frame.stats.normalized_frames);
         input[0] = 0;
-        assert(!feed(input, sizes[n], 798, 2) && frame.stats.missing_soi == 1);
+        assert(!feed(input, sizes[n], 798, 2) && frame.stats.invalid_jpeg == 1);
     }
     /* An earlier malformed header is not rescued by a padded EOF. */
     uvc_frame_init(&frame, assembly.bytes, sizeof(assembly.bytes));

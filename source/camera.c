@@ -2,7 +2,6 @@
  * Copyright (c) 2026 cmyksoda
  */
 #include "camera.h"
-#include "camera_inventory.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -35,17 +34,6 @@ static const char *describe(const CameraEntry *entry, const uint8_t *data, uint8
         return "not a VideoStreaming interface (requires class 0e/subclass 02)";
     *configuration = config[5];
     return NULL;
-}
-
-typedef struct {
-    const CameraOps *ops;
-    const CameraEntry *entry;
-} InventoryContext;
-
-static void report_inventory(void *context, const char *message)
-{
-    const InventoryContext *inventory = context;
-    report(inventory->ops, inventory->entry, message);
 }
 
 /* Discovery runs before streaming. At most two header lines plus four
@@ -148,9 +136,6 @@ bool camera_find(const CameraEntry *entries, size_t count, unsigned width, unsig
                 ops->close(ops->context, opened);
                 continue;
             }
-            CameraInventory inventory;
-            InventoryContext inventory_context = {ops, entry};
-            camera_inventory(scratch, length, report_inventory, &inventory_context, &inventory);
             UvcParseResult parsed =
                 uvc_parse(scratch, length, entry->interface, width, height, mode);
             if (parsed == UVC_LIMIT) report_limit(ops, entry, width, height, mode);

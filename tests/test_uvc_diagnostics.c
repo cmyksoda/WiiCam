@@ -100,47 +100,28 @@ static void test_boundaries(void)
             packet[8 + i] = 0xa5;
         uvc_frame_init(&frame, memory.bytes, sizeof(memory.bytes));
         assert(uvc_packet(&frame, packet, 8 + padding) == (padding == 0));
-        if (padding) {
-            assert(frame.stats.invalid_jpeg == 1 && frame.stats.missing_eoi == 1);
-            assert(!frame.stats.short_jpeg && !frame.stats.missing_soi);
-            assert(frame.stats.rejected_mod8[(6 + padding) & 7] == 1);
-            assert(frame.boundary_samples == 1);
-            const UvcBoundarySample *s = &frame.boundary[0];
-            assert(s->size == 6 + padding && s->reasons == UVC_MISSING_EOI);
-            assert(s->eoi_distance == (int)padding && s->flags == 0x82 && s->header_length == 2);
-            assert(memcmp(s->tail, packet + 2, s->tail_length) == 0);
-        } else {
-            assert(!frame.boundary_samples && frame.stats.accepted_mod8[6] == 1);
-        }
+        assert(frame.stats.invalid_jpeg == (padding != 0));
+        assert(frame.stats.complete == (padding == 0));
     }
     uvc_frame_init(&frame, memory.bytes, sizeof(memory.bytes));
     uint8_t bad[] = {2, 0x82, 0, 1, 2, 3};
-    UvcBoundarySample saved[UVC_BOUNDARY_SAMPLES];
     for (unsigned i = 0; i < 1000; ++i) {
         bad[1] = 0x82 | (i & 1);
         assert(!uvc_packet(&frame, bad, sizeof(bad)));
-        if (i == UVC_BOUNDARY_SAMPLES - 1) memcpy(saved, frame.boundary, sizeof(saved));
     }
-    assert(frame.boundary_samples == UVC_BOUNDARY_SAMPLES);
-    assert(memcmp(saved, frame.boundary, sizeof(saved)) == 0);
-    assert(frame.stats.invalid_jpeg == 1000 && frame.stats.missing_soi == 1000);
-    assert(frame.stats.missing_eoi == 1000 && frame.stats.rejected_mod8[4] == 1000);
-    assert(frame.boundary[0].eoi_distance == -1);
-    assert(frame.boundary[0].reasons == (UVC_MISSING_SOI | UVC_MISSING_EOI));
+    assert(frame.stats.invalid_jpeg == 1000 && frame.dropped == 1000);
 
-    /* Zero/one-byte frames and bad-start-only are classified without overreads. */
+    /* Zero/one-byte frames and bad-start-only are rejected without overreads. */
     uvc_frame_init(&frame, memory.bytes, sizeof(memory.bytes));
     uint8_t tiny[] = {2, 0x82, 0xff};
     assert(!uvc_packet(&frame, tiny, 2));
-    assert(frame.stats.empty_frames == 1 && !frame.boundary_samples);
+    assert(frame.stats.empty_frames == 1 && !frame.stats.invalid_jpeg);
     tiny[1] ^= 1;
     assert(!uvc_packet(&frame, tiny, sizeof(tiny)));
-    assert(frame.stats.short_jpeg == 1 && frame.stats.missing_soi == 1
-           && frame.stats.missing_eoi == 1);
-    assert(frame.boundary[0].head_length == 1 && frame.boundary[0].tail_length == 1);
+    assert(frame.stats.invalid_jpeg == 1);
     uint8_t wrong_start[] = {2, 0x82, 1, 2, 0xff, 0xd9};
     assert(!uvc_packet(&frame, wrong_start, sizeof(wrong_start)));
-    assert(frame.boundary[1].reasons == UVC_MISSING_SOI && frame.boundary[1].eoi_distance == 0);
+    assert(frame.stats.invalid_jpeg == 2);
 
     /* Markers split across packets still assemble; no EOF still does not pass. */
     uvc_frame_init(&frame, memory.bytes, sizeof(memory.bytes));
@@ -148,21 +129,19 @@ static void test_boundaries(void)
     assert(!uvc_packet(&frame, start, sizeof(start)));
     assert(!uvc_packet(&frame, middle, sizeof(middle)));
     assert(uvc_packet(&frame, end, sizeof(end)));
-    assert(!frame.boundary_samples && frame.stats.complete == 1);
+    assert(frame.stats.complete == 1 && !frame.stats.invalid_jpeg);
 
-    /* Tails are bounded; an EOI pair before the final 16 bytes is not scanned. */
+    /* A long zero tail is rejected, and an oversized frame never writes past the buffer. */
     uvc_frame_init(&frame, memory.bytes, sizeof(memory.bytes));
     uint8_t large[82] = {2, 0x82, 0xff, 0xd8, 0xff, 0xd9};
     assert(!uvc_packet(&frame, large, sizeof(large)));
-    assert(frame.boundary[0].head_length == 8 && frame.boundary[0].tail_length == 16);
-    assert(frame.boundary[0].eoi_distance == -1);
-    assert(frame.boundary[0].size == 80);
+    assert(frame.stats.invalid_jpeg == 1);
     uvc_frame_init(&frame, memory.bytes, 3);
     assert(!uvc_packet(&frame, large, sizeof(large)));
-    assert(frame.stats.overflow == 1 && !frame.boundary_samples);
+    assert(frame.stats.overflow == 1 && !frame.stats.invalid_jpeg);
     assert(memory.before == 0x5a && memory.after == 0xa5);
     uvc_frame_init(&frame, memory.bytes, sizeof(memory.bytes));
-    assert(!frame.boundary_samples && !frame.stats.missing_eoi);
+    assert(!frame.stats.invalid_jpeg && !frame.dropped);
 }
 
 int main(void)
@@ -170,6 +149,6 @@ int main(void)
     test_limits();
     test_boundaries();
     puts(
-        "PASS: exact descriptor limits, strict nonzero-tail rejection, padding/split/truncated markers, four-sample cap, short/overflow bounds and reset");
+        "PASS: exact descriptor limits, strict nonzero-tail rejection, padding/split/truncated markers, short/overflow bounds and reset");
     return 0;
 }

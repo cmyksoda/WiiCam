@@ -13,7 +13,7 @@ parser.add_argument("--cc", default="cc")
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 main = (root / "source/main.c").read_text()
-globals_start = main.rfind("enum {", 0, main.index("AV_AUDIO_ONLY"))
+globals_start = main.index("typedef struct {\n    s32 handle;\n    UacMode mode;\n    AudioStream stream;")
 globals_end = main.index("static bool av_audio_start(", globals_start)
 prepare_start = main.index("static void release_microphone(")
 prepare_end = main.index("typedef struct {", prepare_start)
@@ -26,17 +26,15 @@ code = settle + "\n" + main[globals_start:globals_end]
 code += "static bool av_audio_start(s32 handle, const UvcMode *mode);\n"
 code += "static void av_audio_close(void);\n"
 code += "static void av_audio_stop(void);\n"
-code += "static bool av_audio_queue_start(MicRateResult rate, unsigned phase, uint64_t configured);\n"
+code += "static bool av_audio_queue_start(MicRateResult rate);\n"
 queue_end = main.index("static bool av_audio_start(s32 handle, const UvcMode *mode)\n{", wait_end)
 consume_start = main.index("static bool av_audio_consume(")
 consume_end = main.index("static void av_audio_stopping(", consume_start)
-log_start = main.index("static void av_audio_log_rejections(")
-log_end = main.index("static void av_audio_close(void)\n{", log_start)
 cancel_start = main.index("static void av_audio_cancel(")
 cancel_end = main.index("static void *av_audio_worker(", cancel_start)
 drain_start = main.index("static bool drain_audio_queue(")
-drain_end = main.index("static void mic_cancel(", drain_start)
-code += main[consume_start:consume_end] + main[log_start:log_end]
+drain_end = main.index("static bool mic_open(", drain_start)
+code += main[consume_start:consume_end]
 code += main[drain_start:drain_end] + main[cancel_start:cancel_end]
 code += main[prepare_start:prepare_end] + main[wait_start:queue_end] + main[prime_start:prime_end]
 with tempfile.TemporaryDirectory(prefix="wiicam-av-startup-") as directory:
@@ -44,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix="wiicam-av-startup-") as directory:
     (work / "av_startup_under_test.h").write_text(code)
     subprocess.run(
         [*shlex.split(args.cc), "-std=c11", "-Wall", "-Wextra", "-Werror",
-         "-Isource", "-I" + directory, "source/iso_trace.c", "source/audio_stream.c", "source/iso_queue.c", "source/uvc.c",
+         "-Isource", "-I" + directory, "source/audio_stream.c", "source/iso_queue.c", "source/uvc.c",
          "tests/test_av_startup.c", "-o", str(work / "test")],
         cwd=root, check=True,
     )

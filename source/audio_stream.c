@@ -24,15 +24,10 @@ bool audio_stream_packet(AudioStream *s, const uint8_t *data, unsigned length, u
                          uint64_t now)
 {
     if (atomic_load(&s->failed)) return false;
-    unsigned index = s->packets + s->empty + s->rejected;
     if (!capacity || capacity > 1024 || (!data && length)) goto fail;
     bool conceal = false;
     if (length > capacity || (length & 1)) {
-        unsigned n = s->rejected++;
-        if (n < MIC_MAX_REJECTED_PACKETS) {
-            s->rejected_lengths[n] = length;
-            s->rejected_indices[n] = index;
-        }
+        ++s->rejected;
         /* IOS58's high-speed ISO completion preserves iTD status in bits 15:12.
          * 0x1000 is a transaction error with no payload. Only the known camera's
          * 16 kHz / 1 ms mode opts in; never read the failed slot or mask it into PCM. */

@@ -2,12 +2,10 @@
  * Copyright (c) 2026 cmyksoda
  */
 #include "audio_stream.h"
-#include "iso_trace.h"
 #include "iso_queue.h"
 #include "screen.h"
 #include "uvc.h"
 #include <assert.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -91,9 +89,6 @@ static char alternate_log[16];
 static unsigned alternate_log_count;
 static int alternate_result;
 static uint8_t probe[UVC_PROBE_LENGTH];
-static bool rejection_log_test;
-static char rejection_log[4096];
-static unsigned rejection_log_used;
 static uint8_t audio_data[ISO_QUEUE_DEPTH * ISO_DATA_BYTES], audio_stack[32 * 1024];
 static uint16_t audio_sizes[ISO_QUEUE_DEPTH * ISO_PACKETS];
 static uint8_t *audio_iso_data = audio_data;
@@ -116,7 +111,7 @@ static void draw_screen(ScreenPage page, const uint8_t *rgb, unsigned width, uns
                         const char *message);
 static uint32_t buttons(void);
 static void usleep(unsigned microseconds);
-static s32 traced_audio_cancel(s32 handle, uint8_t endpoint);
+static s32 WC04_CancelIso(s32 handle, uint8_t endpoint);
 static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate *alternate);
 
 #include "av_startup_under_test.h"
@@ -165,7 +160,7 @@ static s32 WC04_SetAlternate(s32 handle, uint8_t alternate)
     event('V');
     if (!silent) {
         assert(starts == 1 && av_audio.opened && !av_audio.running && pauses == 1 && !restarts);
-        assert(atomic_load(&av_audio.phase) == AV_VIDEO_ENABLING);
+        assert(committed);
         assert(audio_stream_position(&av_audio.stream) >= AUDIO_BLOCK_BYTES);
         assert(clock_ms >= 100);
         if (scenario == SLOW_ENABLE) clock_ms += 624;
@@ -190,7 +185,7 @@ static int probe_transfer(void *context, uint8_t request, uint16_t selector, uin
         assert(!starts && !av_audio.opened && idles == 1 && idle_sets == 1);
     else {
         assert(starts == 1 && av_audio.opened && av_audio.running);
-        assert(atomic_load(&av_audio.phase) == AV_VIDEO_PREPARING);
+        assert(!pauses && !restarts);
         assert(audio_stream_received(&av_audio.stream) >= AUDIO_BLOCK_BYTES);
     }
     if (!probe_calls++) {
@@ -241,7 +236,6 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
     usb_session.microphone = 43;
     usb_session.microphone_selected = true;
     audio_stream_init(&av_audio.stream, MIC_RATE_UNREADABLE);
-    atomic_init(&av_audio.phase, AV_AUDIO_ONLY);
     av_audio.opened = av_audio.running = true;
     av_audio.handle = 43;
     av_audio.mode = (UacMode){.interface = 3, .endpoint = 0x84, .packet_capacity = 192};
@@ -253,7 +247,7 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
 static void av_audio_stop(void)
 {
     assert(av_audio.opened && av_audio.running && !pauses && !enables && !restarts);
-    assert(atomic_load(&av_audio.phase) == AV_VIDEO_ENABLING);
+    assert(committed);
     av_audio.running = false;
     av_audio.reason = ISO_CANCELLED;
     pre_pause_rejected = av_audio.stream.rejected;
@@ -275,17 +269,15 @@ static int LWP_CreateThread(lwp_t *thread, void *(*entry)(void *), void *context
     assert(entry == av_audio_worker && context == &av_audio && stack == audio_stack);
     assert(size == sizeof(audio_stack) && priority == 80);
     assert(av_audio.opened && !av_audio.running && pauses == 1 && enables == 1 && !restarts);
-    assert(av_audio.stream.rate == MIC_RATE_UNREADABLE
-           && atomic_load(&av_audio.phase) == AV_VIDEO_ACTIVE);
-    assert(av_audio.start == clock_ms && av_audio.setup_to_queue_ms == 0);
+    assert(av_audio.stream.rate == MIC_RATE_UNREADABLE && committed);
+    assert(av_audio.start == clock_ms && av_audio.natural_drain);
     assert(av_audio.handle == 43 && av_audio.mode.interface == 3 && av_audio.mode.endpoint == 0x84);
     assert(!atomic_load(&av_audio.stream.failed) && !audio_stream_position(&av_audio.stream));
-    assert(!av_audio.stream.bytes && !av_audio.stream.packets
-           && av_audio.setup_rejected == pre_pause_rejected);
+    assert(!av_audio.stream.bytes && !av_audio.stream.packets && !av_audio.stream.rejected);
     assert(!atomic_load(&av_audio.stop) && !atomic_load(&av_audio.done)
            && !atomic_load(&av_audio.last_ms));
     for (unsigned n = 0; n < ISO_QUEUE_DEPTH; ++n) {
-        assert(!av_audio.queue.slots[n].pending && !av_audio.initial_completed[n]);
+        assert(!av_audio.queue.slots[n].pending);
         assert(av_audio.queue.slots[n].data == audio_data + n * ISO_DATA_BYTES);
         assert(av_audio.queue.slots[n].sizes == audio_sizes + n * ISO_PACKETS);
     }
@@ -317,16 +309,7 @@ static uint64_t ticks_to_millisecs(uint64_t ticks)
 
 static void report(const char *format, ...)
 {
-    if (rejection_log_test) {
-        assert(!av_audio.running);
-        va_list args;
-        va_start(args, format);
-        int size = vsnprintf(rejection_log + rejection_log_used,
-                             sizeof(rejection_log) - rejection_log_used, format, args);
-        va_end(args);
-        assert(size >= 0 && (unsigned)size < sizeof(rejection_log) - rejection_log_used);
-        rejection_log_used += (unsigned)size;
-    }
+    (void)format;
 }
 
 static void draw_screen(ScreenPage page, const uint8_t *rgb, unsigned width, unsigned height,
@@ -383,8 +366,8 @@ static void usleep(unsigned microseconds)
         return;
     }
     if (scenario == SLOW_VALID && clock_ms % 5) return;
-    assert(atomic_load(&av_audio.phase)
-           == (restarts ? AV_VIDEO_ACTIVE : committed ? AV_VIDEO_PREPARED : AV_AUDIO_ONLY));
+    assert(av_audio.running);
+    assert(restarts ? pauses == 1 && enables == 1 : !pauses && !enables && (committed || !probes));
     unsigned length =
         scenario == EMPTY || (scenario == EMPTY_AFTER_RESTART && restarts)
                 || (scenario == EMPTY_AFTER_PROBE && committed)
@@ -404,7 +387,7 @@ static void usleep(unsigned microseconds)
 static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate *alternate)
 {
     assert(handle == 42 && mode->width == 320 && alternate->endpoint == 0x81);
-    assert(atomic_load(&av_audio.phase) == AV_VIDEO_ACTIVE && enables == !parked_run);
+    assert(enables == !parked_run && pauses == !parked_run);
     assert(restarts == !parked_run && av_audio.running && !usb_session.audio_poisoned);
     assert(audio_stream_position(&av_audio.stream) >= AUDIO_BLOCK_BYTES);
     assert(clock_ms - restarted_ms >= 100);
@@ -435,7 +418,7 @@ static void reset(void)
     av_recording.failed = false;
 }
 
-static s32 traced_audio_cancel(s32 handle, uint8_t endpoint)
+static s32 WC04_CancelIso(s32 handle, uint8_t endpoint)
 {
     assert(drain_test && handle == 43 && endpoint == 0x84);
     ++cancel_calls;
@@ -470,19 +453,15 @@ static void test_audio_drain(void)
     puts("PASS: natural audio drain with out-of-order completion, bounded cancellation fallback and callback ownership");
 }
 
-static void test_rejection_diagnostics(void)
+static void test_rejections(void)
 {
     for (unsigned test = 0; test < 5; ++test) {
         reset();
         audio_stream_init(&av_audio.stream, MIC_RATE_UNREADABLE);
         av_audio.mode.packet_capacity = 192;
-        atomic_init(&av_audio.phase, AV_VIDEO_ACTIVE);
         atomic_init(&av_audio.last_ms, 0);
         atomic_init(&av_audio.stop, false);
-        av_audio.setup_rejected = 4;
         av_audio.running = true;
-        rejection_log_used = 0;
-        rejection_log[0] = 0;
         unsigned rounds = test < 2 ? 40 : 1;
         for (unsigned round = 0; round < rounds; ++round) {
             clock_ms = 19 + 16 * round;
@@ -498,20 +477,9 @@ static void test_rejection_diagnostics(void)
             IsoSlot batch = {.data = audio_data, .sizes = audio_sizes,
                              .result = test == 1 ? 0 : 480};
             unsigned before = av_audio.stream.rejected;
-            unsigned index = av_audio.stream.packets + av_audio.stream.empty + before;
             ++av_audio.queue.consumed;
             assert(av_audio_consume(&av_audio, &batch) == (test >= 2));
-            for (unsigned n = before; n < av_audio.stream.rejected && n < AV_REJECTION_SAMPLES; ++n) {
-                const AvRejectedPacket *sample = &av_audio.rejected_packets[n];
-                unsigned slot = test == 0 ? 3 : test == 1 ? n - before : 15;
-                assert(sample->index == index + slot && sample->slot == slot);
-                assert(sample->elapsed_ms == clock_ms && sample->phase == AV_VIDEO_ACTIVE);
-                assert(sample->batch_result == batch.result);
-                assert(!memcmp(sample->sizes, audio_sizes, sizeof(sample->sizes)));
-                assert(sample->invalid_slots == (test == 1 ? 16u : 1u));
-                assert(sample->plausible_bytes == (test == 1 ? 0u : 480u));
-                assert(sample->slot_nonzero == slot + 1);
-            }
+            assert(av_audio.stream.rejected - before == (test == 0 ? round % 10 == 0 : test == 1 ? 16u : 1u));
             if (test == 1) {
                 assert(!audio_stream_position(&av_audio.stream));
                 assert(!audio_stream_received(&av_audio.stream));
@@ -521,21 +489,8 @@ static void test_rejection_diagnostics(void)
                 assert(atomic_load(&av_audio.last_ms) == clock_ms);
             }
             audio_stream_discard(&av_audio.stream);
-            assert(!rejection_log_used);
         }
-        assert(av_audio.setup_rejected == 4);
         av_audio.running = false;
-        rejection_log_test = true;
-        av_audio_log_rejections();
-        rejection_log_test = false;
-        unsigned rows = 0;
-        const char *next = rejection_log;
-        while ((next = strstr(next, "A/V rejected batch sizes (hex):"))) {
-            ++rows;
-            ++next;
-        }
-        unsigned count = av_audio.stream.rejected;
-        assert(rows == (count < AV_REJECTION_SAMPLES ? count : AV_REJECTION_SAMPLES));
     }
     reset();
     audio_stream_init(&av_audio.stream, MIC_RATE_UNREADABLE);
@@ -550,13 +505,13 @@ static void test_rejection_diagnostics(void)
     assert(atomic_load(&av_audio.last_ms) == 0);
     clock_ms = 500;
     assert(av_audio_poll(&av_audio) == ISO_TIMEOUT);
-    puts("PASS: bounded rejection diagnostics, all-error startup timeout, cumulative errors, strict malformed lengths and concealment-independent watchdog");
+    puts("PASS: rejected packets, all-error startup timeout, cumulative errors, strict malformed lengths and concealment-independent watchdog");
 }
 
 int main(void)
 {
     test_audio_drain();
-    test_rejection_diagnostics();
+    test_rejections();
     const UvcMode mode = {.configuration = 1,
                           .version = 0x100,
                           .format = 1,
@@ -799,17 +754,6 @@ int main(void)
     alternate_log_test = true;
     assert(set_video_alternate(42, 3) == 0 && usb_session.audio_poisoned);
     assert(!park_video_stream(&mode, &parked_alt, ISO_RECORD_STOPPED));
-    reset();
-    scenario = REPLUGGED;
-    usb_session = (UsbSession){.video = 41, .microphone = 44, .video_changed = true,
-                               .microphone_selected = true};
-    assert(microphone_selectable(42) && !strcmp(events, "L"));
-    assert(usb_session.video == 42 && !usb_session.microphone_selected);
-    reset();
-    usb_session = (UsbSession){.video = 42, .video_changed = true, .video_idle = true};
-    assert(!microphone_selectable(42) && !event_count && usb_session.video_changed);
-    reset();
-    assert(microphone_selectable(42) && !event_count && usb_session.video == 42);
     puts(
-        "PASS: actual startup: 48 audio-first/parked/refusal/readiness/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 8 parking outcomes, park/take/restart-status and poison rules, 5 release cases, 3 camera-instance cases; real UVC negotiation linked");
+        "PASS: actual startup: 48 audio-first/parked/refusal/readiness/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 8 parking outcomes, park/take/restart-status and poison rules, 5 release cases; real UVC negotiation linked");
 }

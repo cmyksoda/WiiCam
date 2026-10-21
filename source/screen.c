@@ -250,7 +250,6 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
                                                         : i->video ? "Video review"
                                                                    : "Photo review")
                           : page == SCREEN_NO_SIGNAL ? "No signal"
-                          : i->microphone            ? "Mic test"
                           : page == SCREEN_WAITING   ? "Please wait"
                           : i->recording             ? "Recording"
                           : i->audio                 ? "Video + audio"
@@ -261,42 +260,30 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
              page == SCREEN_MENU        ? gray
              : page == SCREEN_NO_SIGNAL ? yellow
                                         : accent);
-    text_top(right - text_right_edge("v0.2.21", 15), 424, "v0.2.21", 15, gray);
+    text_top(right - text_right_edge("v0.2.22", 15), 424, "v0.2.22", 15, gray);
     if (page == SCREEN_MENU) {
         unsigned action_fill = i->refreshing ? line : cyan;
         unsigned action_ink = i->refreshing ? 0x777777 : 0;
         round_box(left, 106, 544, 90, 3, action_fill);
         key(left + 28, 151, "A", action_fill, action_ink, action_ink);
-        text_center_y(left + 55, 151, i->microphone ? "Record microphone" : "Open viewfinder", 25,
-                      action_ink);
+        text_center_y(left + 55, 151, "Open viewfinder", 25, action_ink);
         round_box(left, 223, 544, 1, 0, line);
         round_box(left + 181, 237, 1, 59, 0, line);
         round_box(left + 362, 237, 1, 59, 0, line);
         key(left + 14, 250, "+", 0, magenta, magenta);
         text_center_y(left + 39, 250, "Mode", 18, gray);
         text_top(left, 277,
-                 i->microphone ? "Mic test"
-                 : i->audio    ? "Video + audio"
-                 : i->video    ? "Video"
-                               : "Photo",
+                 i->audio   ? "Video + audio"
+                 : i->video ? "Video"
+                            : "Photo",
                  22, white);
-        if (!i->microphone) key(left + 206, 250, "1", 0, yellow, yellow);
-        text_center_y(left + (i->microphone ? 194 : 232), 250, i->microphone ? "Audio" : "Size", 18,
-                      gray);
+        key(left + 206, 250, "1", 0, yellow, yellow);
+        text_center_y(left + 232, 250, "Size", 18, gray);
         char size[40], timer[40];
-        if (i->microphone)
-            snprintf(size, sizeof(size), "16 kHz mono");
-        else
-            snprintf(size, sizeof(size), "%u x %u", width, height);
-        text_top(left + 194, 277, size, i->microphone ? 18 : 22, white);
-        text_center_y(left + 377, 250,
-                      i->microphone ? "Recording length"
-                      : i->video    ? "Recording limit"
-                                    : "Left / Right",
-                      18, gray);
-        if (i->microphone)
-            snprintf(timer, sizeof(timer), "5 seconds");
-        else if (i->video)
+        snprintf(size, sizeof(size), "%u x %u", width, height);
+        text_top(left + 194, 277, size, 22, white);
+        text_center_y(left + 377, 250, i->video ? "Recording limit" : "Left / Right", 18, gray);
+        if (i->video)
             snprintf(timer, sizeof(timer), "60s / 128MiB");
         else if (i->timer)
             snprintf(timer, sizeof(timer), "Timer %u s", i->timer);
@@ -387,10 +374,10 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
     int bx = left + (i->playing ? 14 : i->recording ? 128 : 221);
     key(bx, 429, "B", 0, magenta, magenta);
     text_center_y(bx + (i->recording ? 21 : 23), 429,
-                  i->recording                    ? "Stop + menu"
-                  : i->playing                    ? "Stop"
-                  : i->countdown || i->microphone ? "Cancel"
-                                                  : "Menu",
+                  i->recording   ? "Stop + menu"
+                  : i->playing   ? "Stop"
+                  : i->countdown ? "Cancel"
+                                 : "Menu",
                   18, white);
     home(left + 350, 417);
 }
@@ -404,10 +391,10 @@ void screen_draw(Screen *s, ScreenPage page, const uint8_t *rgb, unsigned width,
     logical_width = s->widescreen ? 854 : 640;
     char key_string[256];
     snprintf(key_string, sizeof(key_string),
-             "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u:%s", page, width,
+             "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u:%s", page, width,
              height, s->width, s->height, logical_width, info->sd, info->video, info->recording,
              info->shutter, info->timer, info->countdown, info->seconds, info->refreshing,
-             info->refresh_phase, info->microphone, info->audio, info->can_play, info->can_delete,
+             info->refresh_phase, info->audio, info->can_play, info->can_delete,
              info->confirm_delete, info->playing, info->status ? info->status : "");
     if (strcmp(cached_key, key_string)) {
         compose(page, width, height, info);

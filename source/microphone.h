@@ -3,27 +3,13 @@
 #define WIICAM_MICROPHONE_H
 #include "camera.h"
 #include "uac.h"
-#include <stdio.h>
 
 #define MIC_RATE 16000u
-#define MIC_SECONDS 5u
-#define MIC_BYTES (MIC_RATE * MIC_SECONDS * 2u)
-#define MIC_MAX_REJECTED_PACKETS 4u
 
 typedef struct {
     CameraEntry camera;
     uint32_t token;
 } MicEntry;
-
-typedef struct {
-    uint8_t *data;
-    size_t size, capacity, received, concealed_bytes;
-    unsigned packets, empty, smallest, largest, peak;
-    unsigned rejected, gap_packets;
-    size_t rejected_lengths[MIC_MAX_REJECTED_PACKETS];
-    unsigned rejected_indices[MIC_MAX_REJECTED_PACKETS];
-    bool failed, recover_transactions;
-} MicPcm;
 
 /* IDs are IOS interface handles. Require one unambiguous video/audio pair. */
 bool microphone_match(const MicEntry *entries, size_t count, int32_t video_id,
@@ -39,8 +25,4 @@ typedef enum { MIC_RATE_FAILED, MIC_RATE_OK, MIC_RATE_UNREADABLE } MicRateResult
 
 MicRateResult microphone_set_rate(const CameraEntry *entry, const UacMode *mode, MicControl control,
                                   void *context, uint8_t *data);
-bool microphone_capture_valid(MicRateResult rate, const MicPcm *pcm, uint64_t span_ms);
-void microphone_pcm_init(MicPcm *pcm, uint8_t *data, size_t capacity);
-bool microphone_pcm_packet(MicPcm *pcm, const uint8_t *data, size_t length, unsigned packet_cap);
-bool microphone_wav(FILE *file, const MicPcm *pcm);
 #endif

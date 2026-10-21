@@ -285,45 +285,6 @@ void uvc_frame_init(UvcFrame *frame, uint8_t *data, size_t capacity)
     *frame = (UvcFrame){.data = data, .capacity = capacity, .fid = -1};
 }
 
-/* At most four 24-byte copies and four <=15-pair scans per capture. No I/O,
- * heap allocation or full-frame scan; samples never affect JPEG acceptance. */
-static void boundary_rejected(UvcFrame *frame, uint8_t header_length, uint8_t flags)
-{
-    UvcStats *stats = &frame->stats;
-    uint8_t reasons = 0;
-    if (frame->size < 4) {
-        ++stats->short_jpeg;
-        reasons |= UVC_SHORT_JPEG;
-    }
-    if (frame->size < 2 || frame->data[0] != 0xff || frame->data[1] != 0xd8) {
-        ++stats->missing_soi;
-        reasons |= UVC_MISSING_SOI;
-    }
-    if (frame->size < 2 || frame->data[frame->size - 2] != 0xff
-        || frame->data[frame->size - 1] != 0xd9) {
-        ++stats->missing_eoi;
-        reasons |= UVC_MISSING_EOI;
-    }
-    ++stats->rejected_mod8[frame->size & 7];
-    if (frame->boundary_samples == UVC_BOUNDARY_SAMPLES) return;
-    UvcBoundarySample *sample = &frame->boundary[frame->boundary_samples++];
-    sample->size = (uint32_t)frame->size;
-    sample->reasons = reasons;
-    sample->header_length = header_length;
-    sample->flags = flags;
-    sample->head_length = frame->size < UVC_BOUNDARY_HEAD ? frame->size : UVC_BOUNDARY_HEAD;
-    sample->tail_length = frame->size < UVC_BOUNDARY_TAIL ? frame->size : UVC_BOUNDARY_TAIL;
-    memcpy(sample->head, frame->data, sample->head_length);
-    memcpy(sample->tail, frame->data + frame->size - sample->tail_length, sample->tail_length);
-    sample->eoi_distance = -1;
-    for (int i = (int)sample->tail_length - 2; i >= 0; --i) {
-        if (sample->tail[i] == 0xff && sample->tail[i + 1] == 0xd9) {
-            sample->eoi_distance = (int8_t)(sample->tail_length - i - 2);
-            break;
-        }
-    }
-}
-
 /* Only the observed eight-byte alignment suffix is eligible for removal.
  * Boundary acceptance still requires full decoding before display or saving. */
 static size_t jpeg_length(const UvcFrame *frame)
@@ -393,15 +354,12 @@ bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length)
         if (!frame->discard) {
             if (!frame->size)
                 ++frame->stats.empty_frames;
-            else {
+            else
                 ++frame->stats.invalid_jpeg;
-                boundary_rejected(frame, packet[0], (uint8_t)flags);
-            }
         }
         return false;
     }
     ++frame->stats.complete;
-    ++frame->stats.accepted_mod8[frame->size & 7];
     if (normalized != frame->size) {
         ++frame->stats.normalized_frames;
         frame->stats.padding_bytes += (unsigned)(frame->size - normalized);

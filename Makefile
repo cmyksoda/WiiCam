@@ -42,9 +42,6 @@ HOST_CC ?= cc
 JPEG_CFLAGS ?=
 JPEG_LIBS ?= -ljpeg
 test: build/ui_assets.h | build
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/iso_trace.c tests/test_iso_trace.c -o build/test_iso_trace
-	./build/test_iso_trace
-	python3 tests/test_iso_trace_usb.py --cc "$(HOST_CC)"
 	python3 tests/test_av_startup.py --cc "$(HOST_CC)"
 	python3 tests/test_mic_startup.py --cc "$(HOST_CC)"
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -pthread -Isource source/audio_stream.c source/av_avi.c source/av_recorder.c source/storage.c tests/test_av.c -o build/test_av
@@ -55,15 +52,13 @@ test: build/ui_assets.h | build
 	./build/test_microphone
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c tests/test_uac.c -o build/test_uac
 	./build/test_uac
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c source/camera_inventory.c tests/test_camera_inventory.c -o build/test_camera_inventory
-	./build/test_camera_inventory
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -pthread -Isource source/refresh_control.c tests/test_refresh_control.c -o build/test_refresh_control
 	./build/test_refresh_control
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_uvc_diagnostics.c -o build/test_uvc_diagnostics
 	./build/test_uvc_diagnostics
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c tests/test_uvc_generic.c -o build/test_uvc_generic
 	./build/test_uvc_generic
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c source/camera_inventory.c source/camera.c tests/test_camera.c -o build/test_camera
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c source/camera.c tests/test_camera.c -o build/test_camera
 	./build/test_camera
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/avi.c tests/test_avi.c -o build/test_avi
 	./build/test_avi

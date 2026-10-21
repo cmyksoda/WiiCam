@@ -132,7 +132,7 @@ static void loss_tests(void)
         for (unsigned n = 0; n < sizeof(output); ++n)
             assert(output[n] == (missing ? 0 : pcm[n]));
     }
-    assert(lost > MIC_MAX_REJECTED_PACKETS && stream.rejected == lost);
+    assert(stream.rejected == lost);
     assert(audio_stream_position(&stream) == 60000 * 32);
     assert(audio_stream_received(&stream) == (60000 - lost) * 32);
     assert(stream.concealed_bytes == lost * 32 && audio_stream_valid(&stream));
