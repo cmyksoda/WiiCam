@@ -84,7 +84,7 @@ static bool idle_unit_test, cleanup_test;
 static unsigned cleanup_calls;
 static unsigned idle_sets, probe_calls;
 static int idle_set_result;
-static bool committed, parked_run, alternate_log_test;
+static bool committed, parked_run, fallback_run, alternate_log_test;
 static char alternate_log[16];
 static unsigned alternate_log_count;
 static int alternate_result;
@@ -100,6 +100,7 @@ static int LWP_CreateThread(lwp_t *thread, void *(*entry)(void *), void *context
 static struct {
     bool failed;
 } av_recording;
+static ScreenInfo screen_info;
 
 static s32 WC04_SetAlternate(s32 handle, uint8_t alternate);
 static s32 USB_CloseDevice(s32 *handle);
@@ -145,7 +146,7 @@ static s32 WC04_SetAlternate(s32 handle, uint8_t alternate)
             event('S');
             return 0;
         }
-        if (!silent) {
+        if (!silent && !fallback_run) {
             assert(!starts && !av_audio.opened && !probes && !enables);
             event('Z');
             ++idles;
@@ -158,7 +159,7 @@ static s32 WC04_SetAlternate(s32 handle, uint8_t alternate)
     assert(alternate == 3);
     ++enables;
     event('V');
-    if (!silent) {
+    if (!silent && !fallback_run) {
         assert(starts == 1 && av_audio.opened && !av_audio.running && pauses == 1 && !restarts);
         assert(committed);
         assert(audio_stream_position(&av_audio.stream) >= AUDIO_BLOCK_BYTES);
@@ -181,8 +182,8 @@ static int probe_transfer(void *context, uint8_t request, uint16_t selector, uin
     ProbeContext *camera = context;
     assert(camera->handle == 42 && camera->interface == 1 && data == probe);
     assert(!enables);
-    if (silent)
-        assert(!starts && !av_audio.opened && idles == 1 && idle_sets == 1);
+    if (silent || fallback_run)
+        assert(starts == fallback_run && !av_audio.opened && idles == 1 && idle_sets == 1);
     else {
         assert(starts == 1 && av_audio.opened && av_audio.running);
         assert(!pauses && !restarts);
@@ -291,7 +292,8 @@ static int LWP_CreateThread(lwp_t *thread, void *(*entry)(void *), void *context
 
 static void av_audio_close(void)
 {
-    assert(av_audio.opened && !closes);
+    if (!av_audio.opened) return;
+    assert(!closes);
     ++closes;
     av_audio.opened = av_audio.running = false;
     event('X');
@@ -387,11 +389,18 @@ static void usleep(unsigned microseconds)
 static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate *alternate)
 {
     assert(handle == 42 && mode->width == 320 && alternate->endpoint == 0x81);
-    assert(enables == !parked_run && pauses == !parked_run);
-    assert(restarts == !parked_run && av_audio.running && !usb_session.audio_poisoned);
-    assert(audio_stream_position(&av_audio.stream) >= AUDIO_BLOCK_BYTES);
-    assert(clock_ms - restarted_ms >= 100);
-    assert(atomic_load(&av_audio.stream.consumed) == audio_stream_position(&av_audio.stream));
+    if (fallback_run) {
+        assert(enables == 1 && !pauses && !restarts && !av_audio.opened && idles == 1);
+    } else {
+        assert(enables == !parked_run && pauses == !parked_run);
+        assert(restarts == !parked_run && av_audio.running == screen_info.audio);
+        assert(!usb_session.audio_poisoned);
+        if (screen_info.audio || !parked_run) {
+            assert(audio_stream_position(&av_audio.stream) >= AUDIO_BLOCK_BYTES);
+            assert(clock_ms - restarted_ms >= 100);
+        }
+        assert(atomic_load(&av_audio.stream.consumed) == audio_stream_position(&av_audio.stream));
+    }
     event('C');
     ++captures;
     if (scenario == FAIL_AFTER_ENABLE) {
@@ -409,7 +418,8 @@ static void reset(void)
     exit_requested = silent = idle_unit_test = cleanup_test = settling_test = false;
     cleanup_calls = 0;
     idle_sets = probe_calls = 0;
-    committed = parked_run = alternate_log_test = false;
+    committed = parked_run = fallback_run = alternate_log_test = false;
+    screen_info.audio = true;
     alternate_log_count = 0;
     memset(alternate_log, 0, sizeof(alternate_log));
     memset(events, 0, sizeof(events));
@@ -695,6 +705,35 @@ int main(void)
         assert(!starts && !probes && !enables && !captures && !closes);
     }
 
+    const struct {
+        unsigned scenario;
+        bool parked;
+        IsoStop result;
+        const char *events;
+    } photo_cases[] = {{SUCCESS, false, ISO_RECORD_STOPPED, "APQVRXC"},
+                       {AUDIO_OPEN_FAIL, false, ISO_RECORD_STOPPED, "AIPVC"},
+                       {B_CANCEL, false, ISO_CANCELLED, "AX"},
+                       {SUCCESS, true, ISO_RECORD_STOPPED, "C"}};
+    for (unsigned n = 0; n < 4; ++n) {
+        reset();
+        scenario = photo_cases[n].scenario;
+        screen_info.audio = false;
+        parked_run = photo_cases[n].parked;
+        fallback_run = scenario == AUDIO_OPEN_FAIL;
+        if (parked_run)
+            usb_session = (UsbSession){.video = 42, .microphone = 43, .video_changed = true,
+                                       .microphone_selected = true};
+        UvcAlternate alternate = parked_run ? mode.alts[0] : (UvcAlternate){0};
+        bool video_changed = !parked_run;
+        assert(run_camera(42, (UvcMode *)&mode, &alternate, parked_run, &video_changed)
+               == photo_cases[n].result);
+        assert(!strcmp(events, photo_cases[n].events) && !av_audio.opened);
+        assert(video_changed == (scenario != B_CANCEL && !parked_run));
+        assert(usb_session.audio_poisoned == fallback_run);
+        /* The stubbed close keeps the microphone; test_mic_startup covers the real release. */
+        assert(usb_session.microphone_selected == !fallback_run);
+    }
+
     reset();
     alternate_log_test = true;
     usb_session = (UsbSession){.video = 42, .microphone = 43, .microphone_selected = true};
@@ -714,6 +753,9 @@ int main(void)
     assert(!sound_needs_restart(320, 240, status, sizeof(status)));
     assert(sound_needs_restart(640, 480, status, sizeof(status)));
     assert(!strcmp(status, "Sound needs 320x240 or a restart"));
+    status[0] = 0;
+    assert(!parked_elsewhere(320, 240, status, sizeof(status)) && !status[0]);
+    assert(parked_elsewhere(640, 480, status, sizeof(status)));
     s32 handle = 0;
     UvcMode taken;
     UvcAlternate taken_alt;
@@ -721,6 +763,7 @@ int main(void)
     assert(take_parked_camera(320, 240, &handle, &taken, &taken_alt) && !usb_session.video_parked);
     assert(handle == 42 && taken.width == 320 && taken_alt.number == 3 && taken_alt.endpoint == 0x81);
     assert(!take_parked_camera(320, 240, &handle, &taken, &taken_alt));
+    assert(!parked_elsewhere(640, 480, status, sizeof(status)));
     assert(sound_needs_restart(320, 240, status, sizeof(status)));
     assert(!strcmp(status, "Restart WiiCam to record with sound"));
     assert(park_video_stream(&mode, &parked_alt, ISO_CANCELLED));
@@ -755,5 +798,5 @@ int main(void)
     assert(set_video_alternate(42, 3) == 0 && usb_session.audio_poisoned);
     assert(!park_video_stream(&mode, &parked_alt, ISO_RECORD_STOPPED));
     puts(
-        "PASS: actual startup: 48 audio-first/parked/refusal/readiness/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 8 parking outcomes, park/take/restart-status and poison rules, 5 release cases; real UVC negotiation linked");
+        "PASS: actual startup: 48 audio-first/parked/refusal/readiness/control/cleanup cases, 4 video-without-audio paths, 4 bounded settling/cancellation cases, 8 parking outcomes, park/take/restart-status and poison rules, 5 release cases, 4 photo-first paths; real UVC negotiation linked");
 }

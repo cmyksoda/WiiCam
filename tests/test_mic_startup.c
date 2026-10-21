@@ -303,7 +303,7 @@ int main(void)
         assert(started == (scenario == SUCCESS || scenario == REUSED || scenario == OTHER_OK));
         if (!started) {
             assert(!av_audio.opened && !av_audio.running && !usb_session.microphone_selected);
-            const char *message = scenario == NO_MODE ? "Sound requires one unambiguous"
+            const char *message = scenario == NO_MODE ? "No usable microphone"
                                   : scenario == AMBIGUOUS_PAIR ? "pairing absent or ambiguous"
                                   : scenario >= BAD_IDENTITY && scenario <= CONFIG_SHORT
                                       ? "configuration mismatch"

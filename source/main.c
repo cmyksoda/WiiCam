@@ -408,14 +408,20 @@ static bool park_video_stream(const UvcMode *mode, const UvcAlternate *alt, IsoS
     return true;
 }
 
+/* Changing size needs video alternate 0, so only the parked size keeps sound in this launch. */
+static bool parked_elsewhere(unsigned width, unsigned height, char *status, size_t capacity)
+{
+    if (!usb_session.video_parked || usb_session.audio_poisoned
+        || (usb_session.video_mode.width == width && usb_session.video_mode.height == height))
+        return false;
+    snprintf(status, capacity, "Sound needs %ux%u or a restart", usb_session.video_mode.width,
+             usb_session.video_mode.height);
+    return true;
+}
+
 static bool sound_needs_restart(unsigned width, unsigned height, char *status, size_t capacity)
 {
-    if (usb_session.video_parked && !usb_session.audio_poisoned
-        && (usb_session.video_mode.width != width || usb_session.video_mode.height != height)) {
-        snprintf(status, capacity, "Sound needs %ux%u or a restart", usb_session.video_mode.width,
-                 usb_session.video_mode.height);
-        return true;
-    }
+    if (parked_elsewhere(width, height, status, capacity)) return true;
     if (!usb_session.audio_poisoned && !(usb_session.video_changed && !usb_session.video_parked))
         return false;
     snprintf(status, capacity, "Restart WiiCam to record with sound");
@@ -467,6 +473,12 @@ static bool activate_camera(s32 handle, const UvcAlternate *alt)
 static bool negotiate(s32 handle, const UvcMode *mode, UvcAlternate *alt)
 {
     return prepare_camera(handle, mode, alt) && activate_camera(handle, alt);
+}
+
+static bool microphone_first(s32 video)
+{
+    bind_usb_session(video);
+    return !usb_session.video_changed;
 }
 
 typedef struct {
@@ -804,7 +816,7 @@ static bool mic_open(s32 video_handle, const UvcMode *video_mode, Microphone *mi
     unsigned length = uvc_le16(config + 2);
     if (length < 9 || length > sizeof(reference)
         || !microphone_mode(config, length, &microphone->mode)) {
-        report("Sound requires one unambiguous UAC1 mono PCM16 16000 Hz mode.\n");
+        report("No usable microphone: sound needs one UAC1 mono PCM16 16000 Hz mode.\n");
         return false;
     }
     memcpy(reference, config, length);
@@ -1073,6 +1085,8 @@ static IsoStop av_enable_video(s32 handle, const UvcMode *mode, UvcAlternate *al
     if (!av_audio_queue_start(rate)) return ISO_SUBMIT_FAILED;
     result = av_audio_prime(0);
     if (result != ISO_RUNNING) return result;
+    /* Photos and silent video keep the microphone selected without streaming it. */
+    if (!screen_info.audio) av_audio_close();
     return receive_photo(handle, mode, alt);
 }
 
@@ -1087,7 +1101,8 @@ static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt, bo
         av_recording.failed = true;
         return ISO_SUBMIT_FAILED;
     }
-    draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height, "Checking microphone - B cancels");
+    draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height,
+                screen_info.audio ? "Checking microphone - B cancels" : "Starting camera - B cancels");
     if (!av_audio_start(handle, mode)) {
         av_recording.failed = true;
         return ISO_SUBMIT_FAILED;
@@ -1110,6 +1125,21 @@ static void stop_video_stream(s32 handle, bool video_changed)
     if (!video_changed) return;
     s32 stopped = set_video_alternate(handle, 0);
     report("Stop streaming: %ld\n", (long)stopped);
+}
+
+/* Every mode starts the microphone first, so sound stays available whichever mode opens first. */
+static IsoStop run_camera(s32 handle, UvcMode *mode, UvcAlternate *alt, bool parked,
+                          bool *video_changed)
+{
+    if (screen_info.audio || (!parked && microphone_first(handle))) {
+        IsoStop result = receive_av(handle, mode, alt, parked, video_changed);
+        /* Without a working microphone, photos and silent video still start the old way. */
+        if (screen_info.audio || *video_changed || result == ISO_CANCELLED || result == ISO_EXIT)
+            return result;
+    }
+    *video_changed = !parked;
+    return parked || negotiate(handle, mode, alt) ? receive_photo(handle, mode, alt)
+                                                  : ISO_SUBMIT_FAILED;
 }
 
 static bool save_photo(unsigned width, unsigned height, char path[80])
@@ -1267,7 +1297,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.22 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.24 - IOS %u\n", IOS_GetVersion());
     bool usb_ready = false;
     if (IOS_GetVersion() == 58)
         usb_ready = buffers_ready && USB_Initialize() >= 0;
@@ -1314,8 +1344,9 @@ int main(void)
             VideoSize next = video_size_next(width, height, available_sizes);
             width = next.width;
             height = next.height;
-            snprintf(status, sizeof(status), "%ux%u selected - 2 refreshes camera source", width,
-                     height);
+            if (!parked_elsewhere(width, height, status, sizeof(status)))
+                snprintf(status, sizeof(status), "%ux%u selected - 2 refreshes camera source", width,
+                         height);
             menu = true;
         }
         if (usb_ready && (open_live || (down & (WPAD_BUTTON_A | WPAD_BUTTON_B | WPAD_BUTTON_2)))) {
@@ -1337,12 +1368,8 @@ int main(void)
             UvcAlternate alt;
             bool parked = take_parked_camera(width, height, &handle, &mode, &alt);
             if (parked || find_camera(&handle, width, height, &mode)) {
-                IsoStop result = ISO_SUBMIT_FAILED;
                 bool video_changed = !parked;
-                if (screen_info.audio)
-                    result = receive_av(handle, &mode, &alt, parked, &video_changed);
-                else if (parked || negotiate(handle, &mode, &alt))
-                    result = receive_photo(handle, &mode, &alt);
+                IsoStop result = run_camera(handle, &mode, &alt, parked, &video_changed);
                 if (!park_video_stream(&mode, &alt, result))
                     stop_video_stream(handle, video_changed);
                 snprintf(status, sizeof(status), "%s",
