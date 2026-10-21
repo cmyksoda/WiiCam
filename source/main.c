@@ -3,6 +3,7 @@
  */
 
 #include <gccore.h>
+#include <asndlib.h>
 #include <wiiuse/wpad.h>
 #include <ogc/usb.h>
 #include <ogc/lwp_watchdog.h>
@@ -32,6 +33,7 @@
 #include "microphone.h"
 #include "av_recorder.h"
 #include "iso_trace.h"
+#include "clip.h"
 
 #define FRAME_TIMEOUT_SECONDS 10
 #define AV_RATE_SETTLE_MS 50
@@ -63,6 +65,8 @@ static Recorder recording;
 static AvRecorder av_recording;
 static uint8_t av_jpeg[WC04_FRAME_CAPACITY];
 static uint8_t audio_stack[32 * 1024] ATTRIBUTE_ALIGN(32);
+static Clip clip;
+static uint8_t playback_pcm[AV_MAX_FRAMES * AUDIO_BLOCK_BYTES] ATTRIBUTE_ALIGN(32);
 
 enum { AV_AUDIO_ONLY, AV_VIDEO_PREPARING, AV_VIDEO_PREPARED, AV_VIDEO_ENABLING, AV_VIDEO_ACTIVE };
 
@@ -1717,6 +1721,125 @@ static bool save_photo(unsigned width, unsigned height, char path[80])
     return ok;
 }
 
+/* Sound starts and stops with each playback, so recording always runs with the DSP idle. */
+static bool play_clip(const char *path, unsigned width, unsigned height, ScreenInfo info)
+{
+    char status[80];
+    const char *name = strrchr(path, '/') + 1;
+    info.status = status;
+    info.playing = true;
+    info.can_play = info.can_delete = info.confirm_delete = false;
+    snprintf(status, sizeof(status), "Loading %s", name);
+    draw_screen_info(SCREEN_REVIEW, rgb, width, height, &info);
+    uint64_t start = gettime();
+    if (!clip_open(&clip, path) || clip.width != width || clip.height != height) {
+        report("Playback: %s did not open as a %ux%u WiiCam clip.\n", path, width, height);
+        clip_close(&clip);
+        return false;
+    }
+    size_t pcm_bytes = clip_audio(&clip, playback_pcm, sizeof(playback_pcm));
+    for (size_t n = 0; n + 1 < pcm_bytes; n += 2) {
+        uint8_t low = playback_pcm[n];
+        playback_pcm[n] = playback_pcm[n + 1];
+        playback_pcm[n + 1] = low;
+    }
+    unsigned load_ms = (unsigned)ticks_to_millisecs(gettime() - start);
+    bool sound = pcm_bytes > 0;
+    if (sound) {
+        DCFlushRange(playback_pcm, pcm_bytes);
+        ASND_Init();
+        ASND_Pause(0);
+        sound = ASND_SetVoice(0, VOICE_MONO_16BIT, MIC_RATE, 0, playback_pcm, (s32)pcm_bytes, 255,
+                              255, NULL)
+                == SND_OK;
+        if (!sound) ASND_End();
+    }
+    start = gettime();
+    unsigned shown = clip.frames, drawn = 0, failed = 0;
+    bool finished = false;
+    while (!exit_requested) {
+        if (buttons() & (WPAD_BUTTON_A | WPAD_BUTTON_B | WPAD_BUTTON_1)) break;
+        unsigned ms = sound ? ASND_GetTimerVoice(0)
+                            : (unsigned)ticks_to_millisecs(gettime() - start);
+        unsigned index = (unsigned)((uint64_t)ms * 1000 / clip.frame_us);
+        if (index >= clip.frames || (sound && ASND_StatusVoice(0) == SND_UNUSED)) {
+            finished = true;
+            break;
+        }
+        if (index == shown) {
+            VIDEO_WaitVSync();
+            continue;
+        }
+        shown = index;
+        size_t length;
+        if (!clip_frame(&clip, index, frame_data, sizeof(frame_data), &length)
+            || !photo_decode(frame_data, length, decode_rgb, width, height)) {
+            ++failed;
+            continue;
+        }
+        memcpy(rgb, decode_rgb, (size_t)width * height * 3);
+        ++drawn;
+        unsigned seconds = (unsigned)((uint64_t)index * clip.frame_us / 1000000);
+        unsigned total = (unsigned)((uint64_t)clip.frames * clip.frame_us / 1000000);
+        snprintf(status, sizeof(status), "%s  %02u:%02u / %02u:%02u", name, seconds / 60,
+                 seconds % 60, total / 60, total % 60);
+        draw_screen_info(SCREEN_REVIEW, rgb, width, height, &info);
+    }
+    if (sound) {
+        ASND_StopVoice(0);
+        ASND_End();
+    }
+    report("Playback %s: frames=%u drawn=%u failed=%u last=%u finished=%u sound=%u "
+           "PCM_bytes=%u load_ms=%u frame_us=%u\n",
+           name, clip.frames, drawn, failed, shown, finished, sound, (unsigned)pcm_bytes, load_ms,
+           clip.frame_us);
+    clip_close(&clip);
+    return drawn > 0;
+}
+
+/* Returns true when A asks for the viewfinder again. */
+static bool review(const char *path, unsigned width, unsigned height, char *status,
+                   size_t capacity)
+{
+    ReviewControl control = {.file = path != NULL, .playable = screen_info.video};
+    const char *name = path ? strrchr(path, '/') + 1 : "";
+    bool picture = true;
+    ScreenInfo info = screen_info;
+    info.sd = mounted;
+    info.status = status;
+    while (!exit_requested) {
+        info.can_play = control.file && control.playable;
+        info.can_delete = control.file;
+        info.confirm_delete = control.armed;
+        draw_screen_info(SCREEN_REVIEW, picture ? rgb : NULL, width, height, &info);
+        ReviewAction action = REVIEW_NONE;
+        while (!exit_requested && action == REVIEW_NONE) {
+            uint32_t down = buttons();
+            action = review_control_update(&control, down & WPAD_BUTTON_A, down & WPAD_BUTTON_B,
+                                           down & WPAD_BUTTON_1, down & WPAD_BUTTON_MINUS);
+            if (action == REVIEW_NONE) VIDEO_WaitVSync();
+        }
+        if (action == REVIEW_LIVE || action == REVIEW_MENU) return action == REVIEW_LIVE;
+        if (action == REVIEW_CONFIRM)
+            snprintf(status, capacity, "Press - again to delete %s", name);
+        else if (action == REVIEW_CANCEL)
+            snprintf(status, capacity, "Saved %s", name);
+        else if (action == REVIEW_PLAY) {
+            bool played = play_clip(path, width, height, info);
+            snprintf(status, capacity, played ? "Saved %s" : "Playback failed - %s kept", name);
+        } else if (action == REVIEW_DELETE && unlink(path) == 0) {
+            report("Deleted %s\n", path);
+            control.file = false;
+            picture = false;
+            snprintf(status, capacity, "Deleted %s", name);
+        } else if (action == REVIEW_DELETE) {
+            report("Delete %s failed: %s\n", path, strerror(errno));
+            snprintf(status, capacity, "Delete failed - see log");
+        }
+    }
+    return false;
+}
+
 int main(void)
 {
     session_start = gettime();
@@ -1737,7 +1860,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.20 parked-video sound test - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.21 review and playback test - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");
@@ -1857,25 +1980,22 @@ int main(void)
                     else if (result == ISO_RECORD_STOPPED)
                         snprintf(status, sizeof(status), "No video frames recorded");
                 }
+                bool clip_saved =
+                    screen_info.audio ? av_recording.saved : screen_info.video && recording.saved;
+                /* B is labeled "Stop + menu", so only its stop skips the review. */
+                if (result == ISO_RECORD_STOPPED && clip_saved)
+                    open_live = review(screen_info.audio ? av_recording.path : recording.path,
+                                       width, height, status, sizeof(status));
                 if (result == ISO_PHOTO_READY) {
                     char path[80];
-                    draw_screen(SCREEN_REVIEW, rgb, width, height, "SAVING PHOTO");
+                    draw_screen(SCREEN_REVIEW, rgb, width, height, "Saving photo");
                     bool saved = save_photo(width, height, path);
                     if (saved) {
                         report("Saved %s\n", path);
-                        snprintf(status, sizeof(status), "SAVED %s", strrchr(path, '/') + 1);
+                        snprintf(status, sizeof(status), "Saved %s", strrchr(path, '/') + 1);
                     } else
                         snprintf(status, sizeof(status), "Save failed - check SD and log");
-                    draw_screen(SCREEN_REVIEW, rgb, width, height, status);
-                    while (!exit_requested) {
-                        uint32_t review = buttons();
-                        if (exit_requested || (review & WPAD_BUTTON_B)) break;
-                        if (review & WPAD_BUTTON_A) {
-                            open_live = true;
-                            break;
-                        }
-                        VIDEO_WaitVSync();
-                    }
+                    open_live = review(saved ? path : NULL, width, height, status, sizeof(status));
                 }
             }
             menu = !open_live;

@@ -45,4 +45,21 @@ bool record_control_started(RecordControl *control, bool success, unsigned now_m
 void record_control_result(RecordControl *control, unsigned result);
 /* Single input thread calls once per session, before joining the writer. */
 void record_control_stop(RecordControl *control, unsigned now_ms);
+
+typedef enum {
+    REVIEW_NONE,
+    REVIEW_LIVE,
+    REVIEW_MENU,
+    REVIEW_PLAY,
+    REVIEW_CONFIRM,
+    REVIEW_CANCEL,
+    REVIEW_DELETE
+} ReviewAction;
+
+typedef struct {
+    bool file, playable, armed;
+} ReviewControl;
+
+/* Minus arms deletion and a second Minus confirms; A, B or 1 in between disarms. */
+ReviewAction review_control_update(ReviewControl *control, bool a, bool b, bool one, bool minus);
 #endif

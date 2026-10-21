@@ -21,6 +21,7 @@ FILES = [
     "licenses/UI-font.txt",
     "licenses/WC04-GPLv3.txt",
     "licenses/libogc.txt",
+    "licenses/libasnd.txt",
     "licenses/wiiuse.txt",
     "licenses/libdvm.txt",
     "licenses/FatFs.txt",
@@ -73,7 +74,7 @@ def main():
     (APP / "licenses/WC04-GPLv3.txt").write_bytes((ROOT / "LICENSE").read_bytes())
     # Preserve the exact metadata bytes in the package.
     metadata = (APP / "meta.xml").read_bytes()
-    archive = ROOT / "dist/WiiCam-0.2.20-local-test.zip"
+    archive = ROOT / "dist/WiiCam-0.2.21-local-test.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
         for name in FILES:
             package.write(APP / name, f"apps/wiicam/{name}")

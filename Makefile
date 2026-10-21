@@ -10,7 +10,7 @@ CFLAGS := -O2 -g -std=gnu11 -Wall -Wextra -Werror $(MACHDEP) \
           -Ibuild -I$(LIBOGC_INC) -I$(DEVKITPRO)/portlibs/ppc/include -MMD -MP
 LDFLAGS := $(MACHDEP) -Wl,-Map,build/wc04-camera.map
 LIBPATHS := -L$(LIBOGC_LIB) -L$(DEVKITPRO)/portlibs/ppc/lib
-LIBS := -ljpeg -lfat -lwiiuse -lbte -logc -lm
+LIBS := -ljpeg -lfat -lwiiuse -lbte -lasnd -logc -lm
 OBJECTS := $(patsubst source/%.c,build/%.o,$(wildcard source/*.c)) build/usb.o
 
 .PHONY: all clean test package
@@ -49,6 +49,8 @@ test: build/ui_assets.h | build
 	python3 tests/test_mic_startup.py --cc "$(HOST_CC)"
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -pthread -Isource source/audio_stream.c source/av_avi.c source/av_recorder.c source/storage.c tests/test_av.c -o build/test_av
 	./build/test_av
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/clip.c source/av_avi.c source/avi.c tests/test_clip.c -o build/test_clip
+	./build/test_clip
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c source/microphone.c tests/test_microphone.c -o build/test_microphone
 	./build/test_microphone
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c tests/test_uac.c -o build/test_uac

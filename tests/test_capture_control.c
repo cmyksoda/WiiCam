@@ -83,6 +83,33 @@ int main(void)
     assert(record_control_request(&record) && record_control_begin(&record));
     assert(record_control_started(&record, false, 2000));
     assert(atomic_load(&record.state) == RECORD_FAILED);
+
+#define REVIEW(a, b, one, minus) review_control_update(&review, a, b, one, minus)
+    ReviewControl review = {.file = true, .playable = true};
+    assert(REVIEW(false, false, false, false) == REVIEW_NONE);
+    assert(REVIEW(false, false, false, true) == REVIEW_CONFIRM && review.armed);
+    /* Idle frames keep the confirmation armed; only a second Minus deletes. */
+    assert(REVIEW(false, false, false, false) == REVIEW_NONE && review.armed);
+    assert(REVIEW(false, false, false, true) == REVIEW_DELETE && !review.armed);
+    review.file = false;
+    assert(REVIEW(false, false, false, true) == REVIEW_NONE);
+    assert(REVIEW(false, false, true, false) == REVIEW_NONE);
+    assert(REVIEW(true, false, false, false) == REVIEW_LIVE);
+    assert(REVIEW(false, true, false, false) == REVIEW_MENU);
+    review = (ReviewControl){.file = true, .playable = true};
+    REVIEW(false, false, false, true);
+    assert(REVIEW(false, false, true, false) == REVIEW_PLAY && !review.armed);
+    assert(REVIEW(false, false, false, true) == REVIEW_CONFIRM);
+    assert(REVIEW(false, true, false, false) == REVIEW_MENU && !review.armed);
+    REVIEW(false, false, false, true);
+    assert(REVIEW(true, false, false, false) == REVIEW_LIVE && !review.armed);
+    /* Photos have no playback: 1 only cancels a pending delete. */
+    review = (ReviewControl){.file = true};
+    assert(REVIEW(false, false, true, false) == REVIEW_NONE);
+    REVIEW(false, false, false, true);
+    assert(REVIEW(false, false, true, false) == REVIEW_CANCEL && !review.armed);
+    assert(REVIEW(false, false, false, true) == REVIEW_CONFIRM);
+    assert(REVIEW(false, true, false, true) == REVIEW_MENU && !review.armed);
     puts(
-        "PASS: immediate/repeated capture, 3/5/10 s, cancel/restart, pending shutter loss, record start/stop interleavings, latched duration");
+        "PASS: immediate/repeated capture, 3/5/10 s, cancel/restart, pending shutter loss, record start/stop interleavings, latched duration, review delete/play/cancel");
 }

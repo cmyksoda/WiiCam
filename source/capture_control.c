@@ -92,3 +92,19 @@ void record_control_stop(RecordControl *c, unsigned now)
     atomic_store(&c->stopped_ms, now);
     atomic_exchange(&c->state, RECORD_STOPPING);
 }
+
+ReviewAction review_control_update(ReviewControl *c, bool a, bool b, bool one, bool minus)
+{
+    if (!a && !b && !one && !minus) return REVIEW_NONE;
+    bool armed = c->armed;
+    c->armed = false;
+    if (b) return REVIEW_MENU;
+    if (a) return REVIEW_LIVE;
+    if (minus && c->file) {
+        if (armed) return REVIEW_DELETE;
+        c->armed = true;
+        return REVIEW_CONFIRM;
+    }
+    if (one && c->file && c->playable) return REVIEW_PLAY;
+    return armed ? REVIEW_CANCEL : REVIEW_NONE;
+}

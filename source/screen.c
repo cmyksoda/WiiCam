@@ -129,6 +129,9 @@ static void key(int x, int y, const char *label, unsigned fill, unsigned line, u
     case '2':
         badge(x, y, 4, ink);
         break;
+    case '-':
+        badge(x, y, 6, ink);
+        break;
     default:
         break;
     }
@@ -243,7 +246,9 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
         title_x += text_width(glyph, 28);
     }
     const char *heading = page == SCREEN_MENU        ? (i->sd ? "SD ready" : "No SD")
-                          : page == SCREEN_REVIEW    ? "Photo review"
+                          : page == SCREEN_REVIEW    ? (i->playing ? "Playing"
+                                                        : i->video ? "Video review"
+                                                                   : "Photo review")
                           : page == SCREEN_NO_SIGNAL ? "No signal"
                           : i->microphone            ? "Mic test"
                           : page == SCREEN_WAITING   ? "Please wait"
@@ -256,7 +261,7 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
              page == SCREEN_MENU        ? gray
              : page == SCREEN_NO_SIGNAL ? yellow
                                         : accent);
-    text_top(right - text_right_edge("v0.2.20", 15), 424, "v0.2.20", 15, gray);
+    text_top(right - text_right_edge("v0.2.21", 15), 424, "v0.2.21", 15, gray);
     if (page == SCREEN_MENU) {
         unsigned action_fill = i->refreshing ? line : cyan;
         unsigned action_ink = i->refreshing ? 0x777777 : 0;
@@ -352,12 +357,25 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
     else
         snprintf(status, sizeof(status), "%u x %u  |  Timer off  |  %s", width, height,
                  i->sd ? "SD ready" : "No SD");
-    status_line(left, 384, 544, status, i->recording ? magenta : gray, true);
+    if (page == SCREEN_REVIEW && (i->can_play || i->can_delete)) {
+        unsigned ink = i->confirm_delete ? magenta : white;
+        int delete_x = right - text_width("Delete", 18), actions = delete_x - 23;
+        key(actions, 391, "-", 0, i->confirm_delete ? magenta : gray, ink);
+        text_top(delete_x, 384, "Delete", 18, ink);
+        if (i->can_play) {
+            actions -= 61 + text_width("Play", 18);
+            key(actions, 391, "1", 0, yellow, yellow);
+            text_top(actions + 23, 384, "Play", 18, white);
+        }
+        status_line(left, 384, actions - 30 - left, status, i->confirm_delete ? magenta : gray,
+                    false);
+    } else
+        status_line(left, 384, 544, status, i->recording ? magenta : gray, true);
     if (page == SCREEN_NO_SIGNAL || page == SCREEN_WAITING)
         text_top(left, 419, "No capture", 18, gray);
     else if (!i->sd)
         text_top(left, 419, "Preview only", 18, gray);
-    else if (!i->countdown) {
+    else if (!i->countdown && !i->playing) {
         key(left + 14, 429, "A", 0, cyan, cyan);
         text_center_y(left + (i->recording ? 35 : 37), 429,
                       page == SCREEN_REVIEW ? "Live view"
@@ -366,10 +384,11 @@ static void compose(ScreenPage page, unsigned width, unsigned height, const Scre
                                             : "Take photo",
                       18, white);
     }
-    int bx = left + (i->recording ? 128 : 221);
+    int bx = left + (i->playing ? 14 : i->recording ? 128 : 221);
     key(bx, 429, "B", 0, magenta, magenta);
     text_center_y(bx + (i->recording ? 21 : 23), 429,
                   i->recording                    ? "Stop + menu"
+                  : i->playing                    ? "Stop"
                   : i->countdown || i->microphone ? "Cancel"
                                                   : "Menu",
                   18, white);
@@ -385,10 +404,11 @@ void screen_draw(Screen *s, ScreenPage page, const uint8_t *rgb, unsigned width,
     logical_width = s->widescreen ? 854 : 640;
     char key_string[256];
     snprintf(key_string, sizeof(key_string),
-             "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u:%s", page, width, height, s->width,
-             s->height, logical_width, info->sd, info->video, info->recording, info->shutter,
-             info->timer, info->countdown, info->seconds, info->refreshing, info->refresh_phase,
-             info->microphone, info->audio, info->status ? info->status : "");
+             "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u:%s", page, width,
+             height, s->width, s->height, logical_width, info->sd, info->video, info->recording,
+             info->shutter, info->timer, info->countdown, info->seconds, info->refreshing,
+             info->refresh_phase, info->microphone, info->audio, info->can_play, info->can_delete,
+             info->confirm_delete, info->playing, info->status ? info->status : "");
     if (strcmp(cached_key, key_string)) {
         compose(page, width, height, info);
         for (unsigned y = 0; y < s->height; ++y)

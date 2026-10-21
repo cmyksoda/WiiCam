@@ -207,9 +207,65 @@ static void test_countdown(void)
         "PASS: all countdown values blend over changing live frames, preserve source pixels and clear duplicate footer");
 }
 
+static void draw_review(uint32_t *pixels, const uint8_t *rgb, ScreenInfo info)
+{
+    Screen screen = {pixels, 640, 480, 640, false};
+    screen_draw(&screen, SCREEN_REVIEW, rgb, 320, 240, &info);
+}
+
+/* Counts changed pixel pairs and asserts every change lies in one of the allowed row bands. */
+static unsigned changes(const uint32_t *a, const uint32_t *b, unsigned top, unsigned bottom,
+                        unsigned top2, unsigned bottom2)
+{
+    unsigned changed = 0;
+    for (unsigned y = 0; y < 480; ++y)
+        for (unsigned x = 0; x < 640; x += 2)
+            if (a[(y * 640 + x) / 2] != b[(y * 640 + x) / 2]) {
+                assert((y >= top && y <= bottom) || (y >= top2 && y <= bottom2));
+                ++changed;
+            }
+    return changed;
+}
+
+static void test_review_layout(void)
+{
+    uint32_t *plain = malloc(640 * 480 / 2 * sizeof(*plain));
+    uint32_t *actions = malloc(640 * 480 / 2 * sizeof(*actions));
+    uint32_t *other = malloc(640 * 480 / 2 * sizeof(*other));
+    uint8_t *rgb = malloc(320 * 240 * 3);
+    assert(plain && actions && other && rgb);
+    memset(rgb, 128, 320 * 240 * 3);
+    ScreenInfo base = {.sd = true, .video = true, .audio = true, .status = "Saved AV0005.AVI"};
+    ScreenInfo with = base;
+    with.can_play = with.can_delete = true;
+    draw_review(plain, rgb, base);
+    draw_review(actions, rgb, with);
+    /* Play and Delete stay in the status row, clear of the picture and the bottom buttons. */
+    assert(changes(plain, actions, 376, 407, 376, 407) > 100);
+    ScreenInfo confirm = with;
+    confirm.confirm_delete = true;
+    confirm.status = "Press - again to delete AV0005.AVI";
+    draw_review(other, rgb, confirm);
+    assert(changes(actions, other, 376, 407, 376, 407) > 100);
+    ScreenInfo photo = with;
+    photo.video = photo.audio = photo.can_play = false;
+    draw_review(other, rgb, photo);
+    assert(changes(actions, other, 0, 79, 376, 407) > 100);
+    ScreenInfo playing = base;
+    playing.playing = true;
+    draw_review(other, rgb, playing);
+    assert(changes(plain, other, 0, 79, 412, 479) > 100);
+    free(plain);
+    free(actions);
+    free(other);
+    free(rgb);
+    puts("PASS: review actions, delete confirmation and playback stay in their rows");
+}
+
 int main(void)
 {
     test_countdown();
+    test_review_layout();
     test_loading_circle();
     test_display_aspect(480, false);
     test_display_aspect(480, true);

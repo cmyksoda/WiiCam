@@ -13,7 +13,7 @@ static uint8_t clamp(int n)
 }
 
 static void render_size(const char *name, ScreenPage page, ScreenInfo info, bool wide,
-                        unsigned width)
+                        unsigned width, bool picture)
 {
     for (unsigned y = 0; y < width * 3 / 4; ++y)
         for (unsigned x = 0; x < width; ++x) {
@@ -22,8 +22,7 @@ static void render_size(const char *name, ScreenPage page, ScreenInfo info, bool
             photo[(y * width + x) * 3 + 2] = 144;
         }
     Screen screen = {framebuffer, wide ? 854 : 640, 480, wide ? 854 : 640, wide};
-    screen_draw(&screen, page, page == SCREEN_LIVE || page == SCREEN_REVIEW ? photo : NULL, width,
-                width * 3 / 4, &info);
+    screen_draw(&screen, page, picture ? photo : NULL, width, width * 3 / 4, &info);
     char path[100];
     snprintf(path, sizeof(path), "build/ui-%s.ppm", name);
     FILE *f = fopen(path, "wb");
@@ -45,7 +44,7 @@ static void render_size(const char *name, ScreenPage page, ScreenInfo info, bool
 
 static void render(const char *name, ScreenPage page, ScreenInfo info, bool wide)
 {
-    render_size(name, page, info, wide, 320);
+    render_size(name, page, info, wide, 320, page == SCREEN_LIVE || page == SCREEN_REVIEW);
 }
 
 static void refresh(const char *name, RefreshResult result, unsigned phase, bool wide,
@@ -57,7 +56,7 @@ static void refresh(const char *name, RefreshResult result, unsigned phase, bool
                        .status = status,
                        .refresh_phase = phase,
                        .refreshing = result == REFRESH_BUSY || result == REFRESH_CANCELLING};
-    render_size(name, SCREEN_MENU, info, wide, width);
+    render_size(name, SCREEN_MENU, info, wide, width, false);
 }
 
 int main(void)
@@ -100,8 +99,28 @@ int main(void)
            (ScreenInfo){.sd = true, .video = true, .recording = true}, false);
     render("menu-no-sd", SCREEN_MENU, (ScreenInfo){.status = "No SD - preview only"}, false);
     render("menu-timer-10", SCREEN_MENU, (ScreenInfo){.sd = true, .timer = 10}, false);
-    render_size("live-640", SCREEN_LIVE, (ScreenInfo){.sd = true}, false, 640);
-    render_size("menu-wide", SCREEN_MENU, (ScreenInfo){.sd = true}, true, 640);
+    render_size("live-640", SCREEN_LIVE, (ScreenInfo){.sd = true}, false, 640, true);
+    render_size("menu-wide", SCREEN_MENU, (ScreenInfo){.sd = true}, true, 640, false);
+    const ScreenInfo clip = {.sd = true, .video = true, .audio = true, .can_play = true,
+                             .can_delete = true, .status = "Saved AV0005.AVI"};
+    render("video-review", SCREEN_REVIEW, clip, false);
+    render("video-review-wide", SCREEN_REVIEW, clip, true);
+    ScreenInfo confirm = clip;
+    confirm.confirm_delete = true;
+    confirm.status = "Press - again to delete AV0005.AVI";
+    render("video-review-confirm", SCREEN_REVIEW, confirm, false);
+    render("video-playing", SCREEN_REVIEW,
+           (ScreenInfo){.sd = true, .video = true, .audio = true, .playing = true,
+                        .status = "AV0005.AVI  00:03 / 00:10"},
+           false);
+    render_size("video-deleted", SCREEN_REVIEW,
+                (ScreenInfo){.sd = true, .video = true, .status = "Deleted AV0005.AVI"}, false, 320,
+                false);
+    render("photo-review", SCREEN_REVIEW,
+           (ScreenInfo){.sd = true, .can_delete = true, .status = "Saved WC040023.JPG"}, false);
+    ScreenInfo photo_confirm = {.sd = true, .can_delete = true, .confirm_delete = true,
+                                .status = "Press - again to delete WC040023.JPG"};
+    render("photo-review-confirm", SCREEN_REVIEW, photo_confirm, false);
     for (unsigned n = 1; n <= 10; ++n) {
         char name[32];
         snprintf(name, sizeof(name), "countdown-%u", n);

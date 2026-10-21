@@ -2,9 +2,9 @@
 <app version="1">
   <name>WiiCam</name>
   <coder>cmyksoda</coder>
-  <version>0.2.20</version>
-  <short_description>Video with sound test</short_description>
-  <long_description>0.2.20 local test: keep the video stream parked between recordings with sound, so later clips need no video alternate change. Choose Video + audio first after launching. Repeated clips are unverified on hardware.
+  <version>0.2.21</version>
+  <short_description>Video review test</short_description>
+  <long_description>0.2.21 local test: stopping a video with A opens a review page. 1 plays the clip with sound, Minus twice deletes it, A returns to the viewfinder and B to the menu. Photo review can delete too. Choose Video + audio first after launching.
 
 Take photos with a USB camera or record silent MJPEG video.
 

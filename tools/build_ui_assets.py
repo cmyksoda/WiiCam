@@ -58,8 +58,8 @@ badges = bytearray()
 badge_metrics = []
 # Optical offsets follow visible-ink centering without moving circle centers.
 optical_offsets = {'A': (.25, -1), 'B': (0, 0), '+': (0, 0),
-                   '1': (-.5, 0), '2': (0, 0), 'HOME': (0, -1)}
-for label in ('A', 'B', '+', '1', '2', 'HOME'):
+                   '1': (-.5, 0), '2': (0, 0), 'HOME': (0, -1), '\u2212': (0, 0)}
+for label in ('A', 'B', '+', '1', '2', 'HOME', '\u2212'):
     if label == 'HOME':
         mask = Image.open(ROOT / 'assets/wii-home-glyph-mask.png').convert('L')
         mask = mask.resize((12*badge_scale, round(12*badge_scale*mask.height/mask.width)),

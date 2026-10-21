@@ -38,3 +38,16 @@ for n, name in enumerate(extra):
     draw.text((x,y-20), name, fill='#ffffff')
     plate.paste(im, (x,y))
 plate.save('build/WiiCam-extra-host-QA.png')
+
+review = ['video-review', 'video-review-confirm', 'video-playing', 'video-deleted',
+          'photo-review', 'photo-review-confirm', 'video-review-wide']
+plate = Image.new('RGB', (1320, 2100), '#161616')
+draw = ImageDraw.Draw(plate)
+for n, name in enumerate(review):
+    im = Image.open(Path('build')/f'ui-{name}.ppm')
+    im.save(Path('build')/f'ui-{name}.png')
+    im.thumbnail((640, 480))
+    x, y = 10+(n%2)*660, 28+(n//2)*525
+    draw.text((x,y-20), name, fill='#ffffff')
+    plate.paste(im, (x,y))
+plate.save('build/WiiCam-review-host-QA.png')
