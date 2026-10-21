@@ -94,6 +94,7 @@ distribution.
 
 static s32 hId = -1;
 static const char __oh0_path[] ATTRIBUTE_ALIGN(32) = "/dev/usb/oh0";
+static const char __oh1_path[] ATTRIBUTE_ALIGN(32) = "/dev/usb/oh1";
 static const char __ven_path[] ATTRIBUTE_ALIGN(32) = "/dev/usb/ven";
 static const char __hid_path[] ATTRIBUTE_ALIGN(32) = "/dev/usb/hid";
 
@@ -1518,6 +1519,29 @@ s32 USB_ClearHalt(s32 fd, u8 endpoint)
 }
 
 #endif /* defined(HW_RVL) */
+
+#if defined(HW_RVL)
+/* Test build for WiiCam issue #1: the legacy OH0/OH1 device list, which USB_GetDeviceList
+ * skips once the IOS58 ven host is open. Each entry is two words; the second is vid<<16|pid. */
+s32 WC04_GetLegacyDeviceList(u8 host, u8 num, u32 *entries, u8 *count)
+{
+    u8 found = 0;
+    u32 *buf = (u32*)iosAlloc(hId, num<<3);
+    if (buf==NULL) return IPC_ENOMEM;
+    s32 fd = IOS_Open(host ? __oh1_path : __oh0_path, IPC_OPEN_NONE);
+    if (fd<0) {
+        iosFree(hId, buf);
+        return fd;
+    }
+    s32 ret = IOS_IoctlvFormat(hId, fd, USBV0_IOCTL_GETDEVLIST, "bb:dd", num, 0, &found, sizeof(found), buf, (num<<3));
+    if (found > num) found = num;
+    memcpy(entries, buf, (size_t)found<<3);
+    *count = found;
+    IOS_Close(fd);
+    iosFree(hId, buf);
+    return ret;
+}
+#endif
 
 #if defined(HW_RVL)
 /* IOS58 needs host-side endpoint setup, beyond the USB SET_INTERFACE request. */

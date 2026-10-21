@@ -103,6 +103,7 @@ static void av_audio_close(void);
 s32 WC04_SetAlternate(s32 device_id, u8 alternate);
 s32 WC04_CancelIso(s32 device_id, u8 endpoint);
 s32 WC04_GetInterfaceParameters(s32 device_id, u8 *parameters);
+s32 WC04_GetLegacyDeviceList(u8 host, u8 num, u32 *entries, u8 *count);
 
 static void draw_screen_info(ScreenPage page, const uint8_t *pixels, unsigned width,
                              unsigned height, const ScreenInfo *info)
@@ -246,6 +247,46 @@ static void camera_report(void *context, const CameraEntry *entry, const char *m
            message);
 }
 
+/* Test build for issue #1: when no camera is found, record what every USB host can see. */
+static void report_usb_hosts(void)
+{
+    usb_device_entry devices[CAMERA_MAX_DEVICES];
+    u8 count = 0;
+    s32 result = USB_GetDeviceList(devices, CAMERA_MAX_DEVICES, 0, &count);
+    report("Test: IOS58 ven/hid list result %ld, %u entries\n", (long)result, count);
+    for (unsigned n = 0; n < count && n < CAMERA_MAX_DEVICES; ++n)
+        report("Test:   entry %u: %04x:%04x id %08lx token %08lx\n", n, devices[n].vid,
+               devices[n].pid, (unsigned long)(u32)devices[n].device_id,
+               (unsigned long)devices[n].token);
+    for (u8 host = 0; host < 2; ++host) {
+        u32 entries[2 * 16];
+        u8 found = 0;
+        s32 listed = WC04_GetLegacyDeviceList(host, 16, entries, &found);
+        report("Test: legacy oh%u list result %ld, %u entries\n", host, (long)listed, found);
+        for (unsigned n = 0; n < found; ++n)
+            report("Test:   oh%u entry %u: %04x:%04x (raw %08lx %08lx)\n", host, n,
+                   (unsigned)(entries[2 * n + 1] >> 16), (unsigned)(entries[2 * n + 1] & 0xffff),
+                   (unsigned long)entries[2 * n], (unsigned long)entries[2 * n + 1]);
+    }
+    static const u16 c920_pids[] = {0x082d, 0x0892, 0x08e5};
+    for (unsigned n = 0; n < sizeof(c920_pids) / sizeof(c920_pids[0]); ++n) {
+        s32 fd = -1;
+        s32 opened = USB_OpenDevice(USB_OH0_DEVICE_ID, 0x046d, c920_pids[n], &fd);
+        report("Test: open oh0 046d:%04x -> %ld\n", c920_pids[n], (long)opened);
+        if (opened < 0) continue;
+        usb_devdesc device;
+        s32 got = USB_GetDeviceDescription(fd, &device);
+        report("Test:   device descriptor %ld: USB %x.%02x class %02x ep0 %u configurations %u\n",
+               (long)got, device.bcdUSB >> 8, device.bcdUSB & 0xff, device.bDeviceClass,
+               device.bMaxPacketSize0, device.bNumConfigurations);
+        memset(probe, 0, 9);
+        s32 header = USB_ReadCtrlMsg(fd, 0x80, 6, 0x0200, 0, 9, probe);
+        report("Test:   configuration header %ld: total %u bytes, %u interfaces, %u mA\n",
+               (long)header, uvc_le16(probe + 2), probe[4], probe[8] * 2u);
+        USB_CloseDevice(&fd);
+    }
+}
+
 static bool find_camera(s32 *handle, unsigned width, unsigned height, UvcMode *mode)
 {
     usb_device_entry devices[CAMERA_MAX_DEVICES];
@@ -254,6 +295,7 @@ static bool find_camera(s32 *handle, unsigned width, unsigned height, UvcMode *m
     s32 result = USB_GetDeviceList(devices, CAMERA_MAX_DEVICES, 0, &count);
     if (result < 0 || count > CAMERA_MAX_DEVICES) {
         report("USB device list failed: %ld, interfaces: %u\n", (long)result, count);
+        report_usb_hosts();
         return false;
     }
     for (unsigned i = 0; i < count; ++i)
@@ -269,6 +311,7 @@ static bool find_camera(s32 *handle, unsigned width, unsigned height, UvcMode *m
                      mode)) {
         report(
             "No supported camera mode. Bounded UVC 1.0 MJPEG sizes through 848x480, interval-1 ISO only.\n");
+        report_usb_hosts();
         return false;
     }
     available_sizes = mode->supported_sizes;
@@ -1310,7 +1353,7 @@ int main(void)
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
 
-    report("\nWiiCam 1.0.0-beta - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam C920 test 1 - IOS %u\n", IOS_GetVersion());
     bool usb_ready = false;
     if (IOS_GetVersion() == 58)
         usb_ready = buffers_ready && USB_Initialize() >= 0;
