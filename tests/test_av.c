@@ -84,10 +84,10 @@ static void *producer(void *unused)
 static void ring_tests(void)
 {
     audio_stream_init(&stream, MIC_RATE_UNREADABLE);
-    for (unsigned n = 0; n < 4; n++)
-        assert(audio_stream_packet(&stream, (void *)1, 4096, 192, n));
-    assert(!audio_stream_position(&stream) && stream.rejected == 4);
-    assert(!audio_stream_packet(&stream, (void *)1, 4096, 192, 4));
+    for (unsigned n = 0; n < 500; n++)
+        assert(audio_stream_packet(&stream, (void *)1, 0x1000, 192, n));
+    assert(!audio_stream_position(&stream) && !audio_stream_received(&stream));
+    assert(stream.rejected == 500 && !audio_stream_valid(&stream));
     audio_stream_init(&stream, MIC_RATE_OK);
     assert(!audio_stream_packet(&stream, pcm, 31, 192, 0));
     audio_stream_init(&stream, MIC_RATE_OK);
@@ -116,6 +116,62 @@ static void ring_tests(void)
     assert(!audio_stream_valid(&stream));
     audio_stream_init(&stream, MIC_RATE_FAILED);
     assert(!audio_stream_packet(&stream, pcm, 32, 192, 0));
+}
+
+static void loss_tests(void)
+{
+    uint8_t output[32];
+    unsigned lost = 0;
+    audio_stream_init(&stream, MIC_RATE_UNREADABLE);
+    for (unsigned ms = 0; ms < 60000; ++ms) {
+        bool missing = ms >= 1000 && ms % 200 == 0;
+        if (missing) ++lost;
+        assert(audio_stream_packet(&stream, missing ? (void *)1 : pcm,
+                                   missing ? 0x1000 : 32, 192, ms));
+        assert(audio_stream_read(&stream, output, sizeof(output)));
+        for (unsigned n = 0; n < sizeof(output); ++n)
+            assert(output[n] == (missing ? 0 : pcm[n]));
+    }
+    assert(lost > MIC_MAX_REJECTED_PACKETS && stream.rejected == lost);
+    assert(audio_stream_position(&stream) == 60000 * 32);
+    assert(audio_stream_received(&stream) == (60000 - lost) * 32);
+    assert(stream.concealed_bytes == lost * 32 && audio_stream_valid(&stream));
+
+    for (unsigned test = 0; test < 2; ++test) {
+        audio_stream_init(&stream, MIC_RATE_UNREADABLE);
+        feed(32000);
+        audio_stream_discard(&stream);
+        for (unsigned n = 0; n < 10; ++n)
+            assert(audio_stream_packet(&stream, (void *)1, 0x1000, 192, 1000 + n));
+        assert(audio_stream_received(&stream) == 32000);
+        if (!test)
+            assert(!audio_stream_packet(&stream, (void *)1, 0x1000, 192, 1010));
+        else {
+            assert(audio_stream_packet(&stream, pcm, 32, 192, 1010));
+            assert(!stream.gap_packets);
+        }
+    }
+    audio_stream_init(&stream, MIC_RATE_UNREADABLE);
+    unsigned ms;
+    for (ms = 0; ms < 1000; ++ms) {
+        bool ok = audio_stream_packet(&stream, ms % 2 ? (void *)1 : pcm,
+                                      ms % 2 ? 0x1000 : 32, 192, ms);
+        audio_stream_discard(&stream);
+        if (!ok) break;
+    }
+    assert(ms < 1000 && !audio_stream_valid(&stream));
+    const unsigned malformed[] = {1, 31, 193, 194, 0x1020, 0x2000, 0x4000, 0x8000, 0xffff};
+    for (unsigned n = 0; n < sizeof(malformed) / sizeof(malformed[0]); ++n) {
+        audio_stream_init(&stream, MIC_RATE_UNREADABLE);
+        assert(!audio_stream_packet(&stream, (void *)1, malformed[n], 192, 0));
+        assert(!audio_stream_position(&stream));
+    }
+    audio_stream_init(&stream, MIC_RATE_UNREADABLE);
+    assert(audio_stream_packet(&stream, pcm, 64, 192, 0));
+    assert(!audio_stream_packet(&stream, (void *)1, 0x1000, 192, 1));
+    audio_stream_init(&stream, MIC_RATE_OK);
+    assert(!audio_stream_packet(&stream, (void *)1, 0x1000, 192, 0));
+    puts("PASS: 60-second loss replay, zero padding without reading failed payload, real PCM readiness, burst/loss limits and strict malformed lengths");
 }
 
 typedef struct {
@@ -164,6 +220,7 @@ int main(void)
 {
     memset(pcm, 0x21, sizeof(pcm));
     ring_tests();
+    loss_tests();
     char directory[] = "build/av-test-XXXXXX";
     assert(mkdtemp(directory));
     start(directory);

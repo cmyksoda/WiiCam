@@ -17,12 +17,12 @@ typedef struct {
 
 typedef struct {
     uint8_t *data;
-    size_t size, capacity;
+    size_t size, capacity, received, concealed_bytes;
     unsigned packets, empty, smallest, largest, peak;
-    unsigned rejection_budget, rejected;
+    unsigned rejected, gap_packets;
     size_t rejected_lengths[MIC_MAX_REJECTED_PACKETS];
     unsigned rejected_indices[MIC_MAX_REJECTED_PACKETS];
-    bool failed;
+    bool failed, recover_transactions;
 } MicPcm;
 
 /* IDs are IOS interface handles. Require one unambiguous video/audio pair. */

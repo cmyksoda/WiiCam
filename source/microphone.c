@@ -86,15 +86,16 @@ MicRateResult microphone_set_rate(const CameraEntry *entry, const UacMode *mode,
     data[1] = MIC_RATE >> 8;
     data[2] = 0;
     if (control(context, 0x22, 1, 0x0100, mode->endpoint, data, 3) != 3) return MIC_RATE_FAILED;
-    memset(data, 0, 3);
-    int result = control(context, 0xa2, 0x81, 0x0100, mode->endpoint, data, 3);
-    /* Observed twice on 0c45:6366: SET succeeds, GET fails before streaming.
-     * Keep this diagnostic exception separate from a verified rate. */
-    if (result == -7102 && entry && entry->vid == 0x0c45 && entry->pid == 0x6366
+    /* This exact camera profile repeatedly rejects rate readback. Avoid issuing
+     * the failing GET before streaming; successful SET alone is not proof
+     * of the clock rate, so retain the PCM timing check for this quirk. */
+    if (entry && entry->vid == 0x0c45 && entry->pid == 0x6366
         && entry->interface == 3 && mode->control_interface == 2 && mode->interface == 3
         && mode->alternate == 1 && mode->endpoint == 0x84 && mode->packet_capacity == 192
         && mode->interval == 4)
         return MIC_RATE_UNREADABLE;
+    memset(data, 0, 3);
+    int result = control(context, 0xa2, 0x81, 0x0100, mode->endpoint, data, 3);
     if (result != 3) return MIC_RATE_FAILED;
     uint32_t rate = (uint32_t)data[0] | (uint32_t)data[1] << 8 | (uint32_t)data[2] << 16;
     return rate == MIC_RATE ? MIC_RATE_OK : MIC_RATE_FAILED;
@@ -102,7 +103,9 @@ MicRateResult microphone_set_rate(const CameraEntry *entry, const UacMode *mode,
 
 bool microphone_capture_valid(MicRateResult rate, const MicPcm *pcm, uint64_t span_ms)
 {
-    if (!pcm || pcm->failed || !pcm->data || pcm->size != MIC_BYTES) return false;
+    if (!pcm || pcm->failed || !pcm->data || pcm->size != MIC_BYTES || !pcm->received
+        || pcm->received > pcm->size || pcm->concealed_bytes != pcm->size - pcm->received)
+        return false;
     if (rate == MIC_RATE_OK) return true;
     /* A 10% timing window allows queued batches and scheduling jitter, while
      * rejecting a nominal five-second WAV captured at a different advertised rate.
@@ -121,26 +124,39 @@ bool microphone_pcm_packet(MicPcm *pcm, const uint8_t *data, size_t length, unsi
 {
     if (!pcm || pcm->failed) return false;
     if (!data || !packet_cap || packet_cap > 1024 || pcm->size > pcm->capacity
-        || pcm->rejection_budget > MIC_MAX_REJECTED_PACKETS) {
-        pcm->failed = true;
-        return false;
-    }
+        || pcm->received > pcm->size || pcm->concealed_bytes != pcm->size - pcm->received)
+        goto fail;
+    bool conceal = false;
     if (length > packet_cap || (length & 1)) {
         unsigned rejected = pcm->rejected++;
         if (rejected < MIC_MAX_REJECTED_PACKETS) {
             pcm->rejected_lengths[rejected] = length;
             pcm->rejected_indices[rejected] = pcm->packets + rejected;
         }
-        /* Discard the entire invalid slot without reading it. Only the observed
-         * camera's diagnostic path opts into this small, logged loss budget. */
-        pcm->failed = pcm->rejected > pcm->rejection_budget;
-        return !pcm->failed;
+        /* This IOS58 status word carries no payload. The known 1 ms camera mode
+         * can wait for initial PCM, then preserve time across isolated losses. */
+        if (!pcm->recover_transactions || packet_cap != 192 || length != 0x1000) goto fail;
+        if (!pcm->received) return true;
+        if (pcm->smallest != 32 || pcm->largest != 32 || ++pcm->gap_packets > 10
+            || (pcm->concealed_bytes + 32) * 100 > pcm->size + MIC_RATE * 2u)
+            goto fail;
+        length = 32;
+        conceal = true;
+    }
+    size_t take = length < pcm->capacity - pcm->size ? length : pcm->capacity - pcm->size;
+    if (conceal) {
+        memset(pcm->data + pcm->size, 0, take);
+        pcm->concealed_bytes += take;
+        pcm->size += take;
+        return true;
     }
     ++pcm->packets;
-    if (!length) ++pcm->empty;
+    if (!length) {
+        ++pcm->empty;
+        return true;
+    }
     if (length < pcm->smallest) pcm->smallest = (unsigned)length;
     if (length > pcm->largest) pcm->largest = (unsigned)length;
-    size_t take = length < pcm->capacity - pcm->size ? length : pcm->capacity - pcm->size;
     memcpy(pcm->data + pcm->size, data, take);
     for (size_t n = 0; n < take; n += 2) {
         int sample = data[n] | (unsigned)data[n + 1] << 8;
@@ -149,12 +165,19 @@ bool microphone_pcm_packet(MicPcm *pcm, const uint8_t *data, size_t length, unsi
         if (magnitude > pcm->peak) pcm->peak = magnitude;
     }
     pcm->size += take;
+    pcm->received += take;
+    pcm->gap_packets = 0;
     return true;
+fail:
+    pcm->failed = true;
+    return false;
 }
 
 bool microphone_wav(FILE *file, const MicPcm *pcm)
 {
-    if (!file || !pcm || pcm->failed || !pcm->data || pcm->size != MIC_BYTES) return false;
+    if (!file || !pcm || pcm->failed || !pcm->data || pcm->size != MIC_BYTES || !pcm->received
+        || pcm->received > pcm->size || pcm->concealed_bytes != pcm->size - pcm->received)
+        return false;
     uint8_t header[44] = {0};
     memcpy(header, "RIFF", 4);
     uvc_put32(header + 4, 36 + MIC_BYTES);

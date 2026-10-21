@@ -2,9 +2,9 @@
 <app version="1">
   <name>WiiCam</name>
   <coder>cmyksoda</coder>
-  <version>0.2.15</version>
-  <short_description>Audio USB diagnostic - not a fix</short_description>
-  <long_description>0.2.15 diagnostic only: bounded audio USB metadata trace. No capture fix claimed.
+  <version>0.2.20</version>
+  <short_description>Video with sound test</short_description>
+  <long_description>0.2.20 local test: keep the video stream parked between recordings with sound, so later clips need no video alternate change. Choose Video + audio first after launching. Repeated clips are unverified on hardware.
 
 Take photos with a USB camera or record silent MJPEG video.
 

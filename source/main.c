@@ -93,10 +93,23 @@ typedef struct {
     uint64_t start;
     IsoStop reason;
     int failure, cancel_result;
-    bool opened, running;
+    bool opened, running, natural_drain;
 } AvCapture;
 
 static AvCapture av_audio;
+
+/* IOS58 microphone packets become transaction errors after video alternate 0, or after any video
+ * alternate change before the microphone is selected; only an IOS reload or replug clears it. */
+typedef struct {
+    s32 video, microphone;
+    UacMode microphone_mode;
+    MicRateResult microphone_rate;
+    UvcMode video_mode;
+    UvcAlternate video_alt;
+    bool video_changed, video_idle, video_parked, microphone_selected, audio_poisoned;
+} UsbSession;
+
+static UsbSession usb_session;
 static bool av_audio_start(s32 handle, const UvcMode *mode);
 static void av_audio_stop(void);
 static void av_audio_close(void);
@@ -393,9 +406,96 @@ static int probe_transfer(void *context, uint8_t request, uint16_t selector,
     return length;
 }
 
+static void release_microphone(void)
+{
+    if (!usb_session.microphone_selected) return;
+    s32 result = WC04_SetAlternate(usb_session.microphone, 0);
+    report("Microphone released: idle alternate=%ld\n", (long)result);
+    USB_CloseDevice(&usb_session.microphone);
+    usb_session.microphone_selected = false;
+}
+
+static void bind_usb_session(s32 video)
+{
+    if (usb_session.video == video) return;
+    release_microphone();
+    usb_session = (UsbSession){.video = video};
+}
+
+static s32 set_video_alternate(s32 handle, u8 alternate)
+{
+    bind_usb_session(handle);
+    if (!usb_session.microphone_selected || !alternate) usb_session.audio_poisoned = true;
+    usb_session.video_parked = false;
+    s32 result = WC04_SetAlternate(handle, alternate);
+    usb_session.video_changed = true;
+    usb_session.video_idle = !alternate && result == 0;
+    return result;
+}
+
+static bool microphone_selectable(s32 video)
+{
+    bind_usb_session(video);
+    return !usb_session.video_changed;
+}
+
+static bool take_parked_camera(unsigned width, unsigned height, s32 *handle, UvcMode *mode,
+                               UvcAlternate *alt)
+{
+    if (!usb_session.video_parked || usb_session.video_mode.width != width
+        || usb_session.video_mode.height != height)
+        return false;
+    usb_session.video_parked = false;
+    *handle = usb_session.video;
+    *mode = usb_session.video_mode;
+    *alt = usb_session.video_alt;
+    report("Reusing parked camera stream %ux%u alternate %u; enumeration, negotiation and "
+           "alternate changes skipped.\n",
+           width, height, alt->number);
+    return true;
+}
+
+static bool park_video_stream(const UvcMode *mode, const UvcAlternate *alt, IsoStop result)
+{
+    bool healthy =
+        result == ISO_RECORD_STOPPED || result == ISO_CANCELLED || result == ISO_PHOTO_READY;
+    if (!healthy || !usb_session.microphone_selected || usb_session.audio_poisoned
+        || !usb_session.video_changed || usb_session.video_idle)
+        return false;
+    usb_session.video_parked = true;
+    usb_session.video_mode = *mode;
+    usb_session.video_alt = *alt;
+    report("Video parked at alternate %u for %ux%u; sound stays available without a restart.\n",
+           alt->number, mode->width, mode->height);
+    return true;
+}
+
+static bool sound_needs_restart(unsigned width, unsigned height, char *status, size_t capacity)
+{
+    if (usb_session.video_parked && !usb_session.audio_poisoned
+        && (usb_session.video_mode.width != width || usb_session.video_mode.height != height)) {
+        snprintf(status, capacity, "Sound needs %ux%u or a restart", usb_session.video_mode.width,
+                 usb_session.video_mode.height);
+        return true;
+    }
+    if (!usb_session.audio_poisoned && !(usb_session.video_changed && !usb_session.video_parked))
+        return false;
+    snprintf(status, capacity, "Restart WiiCam to record with sound");
+    return true;
+}
+
+static void release_camera(void)
+{
+    release_microphone();
+    if (!usb_session.video_changed || usb_session.video_idle) return;
+    s32 result = WC04_SetAlternate(usb_session.video, 0);
+    report("Video released: idle alternate=%ld\n", (long)result);
+    usb_session.video_idle = true;
+}
+
 static bool idle_camera(s32 handle)
 {
-    s32 result = WC04_SetAlternate(handle, 0);
+    s32 result = set_video_alternate(handle, 0);
     if (result < 0) {
         report("Idle alternate failed: %ld\n", (long)result);
         return false;
@@ -421,7 +521,7 @@ static bool prepare_camera(s32 handle, const UvcMode *mode, UvcAlternate *alt)
 
 static bool activate_camera(s32 handle, const UvcAlternate *alt)
 {
-    s32 result = WC04_SetAlternate(handle, alt->number);
+    s32 result = set_video_alternate(handle, alt->number);
     report("Streaming alternate %u, endpoint %02x, capacity %u: %ld\n", alt->number, alt->endpoint,
            alt->capacity, (long)result);
     return result >= 0;
@@ -906,6 +1006,7 @@ typedef struct {
     UacMode mode;
     MicPcm pcm;
     CameraEntry entry;
+    IsoQueue *queue;
     uint64_t start, last_input, first_packet, last_packet;
     unsigned width, height;
 } MicTest;
@@ -972,11 +1073,11 @@ static bool mic_consume(void *context, const IsoSlot *slot)
     MicTest *test = context;
     iso_trace_consume(slot, slot->sizes);
     for (unsigned n = 0; n < ISO_PACKETS; ++n) {
-        size_t before = test->pcm.size;
+        size_t before = test->pcm.received;
         if (!microphone_pcm_packet(&test->pcm, slot->data + n * test->mode.packet_capacity,
                                    slot->sizes[n], test->mode.packet_capacity))
             return true;
-        if (test->pcm.size > before) {
+        if (test->pcm.received > before) {
             test->last_packet = gettime();
             if (!test->first_packet) test->first_packet = test->last_packet;
         }
@@ -996,6 +1097,8 @@ static IsoStop mic_poll(void *context)
     }
     if (exit_requested) return ISO_EXIT;
     if (down & WPAD_BUTTON_B) return ISO_CANCELLED;
+    uint64_t last = test->first_packet ? test->last_packet : test->start;
+    if (ticks_to_millisecs(now - last) >= 500) return ISO_TIMEOUT;
     if (ticks_to_millisecs(now - test->start) >= 10000) return ISO_TIMEOUT;
     return ISO_RUNNING;
 }
@@ -1007,9 +1110,31 @@ static void mic_stopping(void *context, IsoStop reason, int failure)
     report("Microphone stop reason=%u failure=%d; draining before saving.\n", reason, failure);
 }
 
+static bool drain_audio_queue(const IsoQueue *queue)
+{
+    uint64_t start = gettime();
+    /* Four 16-packet requests cover 64 ms on the observed 1 ms audio endpoint.
+     * Callback completion, not the wait deadline, returns buffer ownership. */
+    for (;;) {
+        bool pending = false;
+        for (unsigned n = 0; n < ISO_QUEUE_DEPTH; ++n) {
+            const IsoSlot *slot = &queue->slots[n];
+            pending |= slot->pending
+                       && !atomic_load_explicit(&slot->completed, memory_order_acquire);
+        }
+        if (!pending) return true;
+        if (ticks_to_millisecs(gettime() - start) >= 100) return false;
+        usleep(1000);
+    }
+}
+
 static void mic_cancel(void *context)
 {
     const MicTest *test = context;
+    if (drain_audio_queue(test->queue)) {
+        report("Microphone USB requests drained naturally; endpoint cancel skipped.\n");
+        return;
+    }
     draw_screen(SCREEN_WAITING, NULL, test->width, test->height, "If stuck here, unplug camera");
     s32 result = traced_audio_cancel(test->handle, test->mode.endpoint);
     report("Microphone cancel endpoint=%02x result=%ld; waiting for all completions.\n",
@@ -1082,6 +1207,13 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
     s32 video_handle;
     UvcMode video_mode;
     if (!find_camera(&video_handle, width, height, &video_mode)) return;
+    if (!microphone_selectable(video_handle)) {
+        report("Microphone test skipped: the video alternate changed earlier in this launch, "
+               "so IOS58 cannot select the microphone until WiiCam restarts.\n");
+        snprintf(status, capacity, "Restart WiiCam to test the microphone");
+        USB_CloseDevice(&video_handle);
+        return;
+    }
     MicTest test = {.width = width, .height = height};
     bool opened = mic_open(video_handle, &video_mode, &test);
     if (opened) begin_audio_trace(video_handle, &video_mode, &test, false);
@@ -1090,12 +1222,12 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
     uint8_t *samples = malloc(MIC_BYTES);
     microphone_pcm_init(&test.pcm, samples, MIC_BYTES);
     MicRateResult rate = MIC_RATE_FAILED;
-    if (samples && traced_audio_alternate(test.handle, 0) >= 0
-        && traced_audio_alternate(test.handle, test.mode.alternate) >= 0)
+    if (samples && traced_audio_alternate(test.handle, 0) == 0
+        && traced_audio_alternate(test.handle, test.mode.alternate) == 0)
         rate = microphone_set_rate(&test.entry, &test.mode, mic_control, &test, probe);
-    if (rate == MIC_RATE_UNREADABLE) test.pcm.rejection_budget = MIC_MAX_REJECTED_PACKETS;
+    test.pcm.recover_transactions = rate == MIC_RATE_UNREADABLE;
     if (rate == MIC_RATE_UNREADABLE)
-        report("Microphone 0c45:6366 rate readback unavailable (-7102) after exact SET; "
+        report("Microphone 0c45:6366 rate readback skipped (known failing GET); exact SET succeeded; "
                "diagnostic capture requires 4500..5500 ms packet span before WAV save.\n");
     if (rate != MIC_RATE_FAILED && !exit_requested) {
         report("Microphone test: interface=%u alt=%u endpoint=%02x PCM16 mono rate=%u "
@@ -1106,6 +1238,7 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
                     "Recording microphone for 5 seconds - B cancels");
         IsoQueue queue;
         iso_queue_init(&queue, iso_data, iso_sizes, test.mode.packet_capacity);
+        test.queue = &queue;
         const IsoHooks hooks = {.submit = mic_submit,
                                 .consume = mic_consume,
                                 .poll = mic_poll,
@@ -1119,7 +1252,7 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
         report("Microphone result: bytes=%u samples=%u packets=%u empty=%u lengths=%u..%u "
                "peak=%u fatal=%u elapsed_ms=%u first_packet_ms=%llu last_packet_ms=%llu\n",
                (unsigned)test.pcm.size, (unsigned)test.pcm.size / 2, test.pcm.packets,
-               test.pcm.empty, test.pcm.packets ? test.pcm.smallest : 0, test.pcm.largest,
+               test.pcm.empty, test.pcm.received ? test.pcm.smallest : 0, test.pcm.largest,
                test.pcm.peak, test.pcm.failed, elapsed,
                (unsigned long long)(test.first_packet
                                         ? ticks_to_millisecs(test.first_packet - test.start)
@@ -1127,8 +1260,10 @@ static void microphone_test(unsigned width, unsigned height, char *status, size_
                (unsigned long long)(test.last_packet
                                         ? ticks_to_millisecs(test.last_packet - test.start)
                                         : 0));
-        report("Microphone packet rejection: rejected=%u budget=%u; invalid slots never copied.\n",
-               test.pcm.rejected, test.pcm.rejection_budget);
+        report("Microphone packet recovery: rejected=%u actual_PCM_bytes=%u silent_bytes=%u "
+               "consecutive_loss_ms=%u; invalid slots never copied.\n",
+               test.pcm.rejected, (unsigned)test.pcm.received, (unsigned)test.pcm.concealed_bytes,
+               test.pcm.gap_packets);
         for (unsigned n = 0; n < test.pcm.rejected && n < MIC_MAX_REJECTED_PACKETS; ++n)
             report("Microphone rejected packet: index=%u slot=%u length=%u cap=%u odd=%u\n",
                    test.pcm.rejected_indices[n], test.pcm.rejected_indices[n] % ISO_PACKETS,
@@ -1198,7 +1333,7 @@ static bool av_audio_consume(void *context, const IsoSlot *slot)
     iso_trace_consume(slot, slot->sizes);
     AvCapture *audio = context;
     unsigned now = (unsigned)ticks_to_millisecs(gettime() - audio->start);
-    unsigned before = audio_stream_position(&audio->stream);
+    unsigned before = audio_stream_received(&audio->stream);
     unsigned phase = atomic_load(&audio->phase);
     if (audio->queue.consumed == 1) {
         audio->first_ms = now;
@@ -1231,13 +1366,9 @@ static bool av_audio_consume(void *context, const IsoSlot *slot)
             for (unsigned i = 0; i < audio->mode.packet_capacity; ++i)
                 if (data[i]) ++sample->slot_nonzero;
         }
-        if (audio->setup_rejected + audio->stream.rejected > MIC_MAX_REJECTED_PACKETS) {
-            atomic_store(&audio->stream.failed, true);
-            ok = false;
-        }
         if (!ok) return true;
     }
-    if (audio_stream_position(&audio->stream) != before) atomic_store(&audio->last_ms, now);
+    if (audio_stream_received(&audio->stream) != before) atomic_store(&audio->last_ms, now);
     return false;
 }
 
@@ -1261,6 +1392,8 @@ static void av_audio_stopping(void *context, IsoStop reason, int failure)
 static void av_audio_cancel(void *context)
 {
     AvCapture *audio = context;
+    audio->natural_drain = drain_audio_queue(&audio->queue);
+    if (audio->natural_drain) return;
     audio->cancel_result = traced_audio_cancel(audio->handle, audio->mode.endpoint);
 }
 
@@ -1333,21 +1466,32 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
     atomic_init(&av_audio.done, false);
     atomic_init(&av_audio.last_ms, 0);
     atomic_init(&av_audio.phase, AV_AUDIO_ONLY);
-    MicTest test = {0};
-    if (!mic_open(handle, mode, &test)) return false;
+    bool reused = usb_session.microphone_selected;
+    MicTest test = {.handle = usb_session.microphone, .mode = usb_session.microphone_mode};
+    if (!reused && !mic_open(handle, mode, &test)) return false;
     begin_audio_trace(handle, mode, &test, true);
     av_audio.handle = test.handle;
     av_audio.mode = test.mode;
     av_audio.opened = true;
-    MicRateResult rate = MIC_RATE_FAILED;
-    if (traced_audio_alternate(test.handle, 0) >= 0
-        && traced_audio_alternate(test.handle, test.mode.alternate) >= 0)
-        rate = microphone_set_rate(&test.entry, &test.mode, mic_control, &test, probe);
+    MicRateResult rate = usb_session.microphone_rate;
+    if (reused)
+        report("A/V microphone still selected from the last recording; alternate and rate "
+               "unchanged.\n");
+    else {
+        rate = MIC_RATE_FAILED;
+        if (traced_audio_alternate(test.handle, 0) == 0
+            && traced_audio_alternate(test.handle, test.mode.alternate) == 0)
+            rate = microphone_set_rate(&test.entry, &test.mode, mic_control, &test, probe);
+        usb_session.microphone = test.handle;
+        usb_session.microphone_mode = test.mode;
+        usb_session.microphone_rate = rate;
+        usb_session.microphone_selected = rate != MIC_RATE_FAILED;
+    }
     uint64_t configured = gettime();
     audio_stream_init(&av_audio.stream, rate);
     /* Keep the 0.2.4 interval fixed while isolating video-interface setup. */
     if (rate == MIC_RATE_FAILED || exit_requested
-        || (rate == MIC_RATE_UNREADABLE && !av_audio_wait_rate(configured))) {
+        || (!reused && rate == MIC_RATE_UNREADABLE && !av_audio_wait_rate(configured))) {
         av_audio_close();
         return false;
     }
@@ -1355,6 +1499,9 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
         av_audio_close();
         return false;
     }
+    if (!reused && rate == MIC_RATE_UNREADABLE)
+        report("A/V microphone rate readback skipped for known 0c45:6366 profile; "
+               "exact SET succeeded, actual PCM still required.\n");
     report("A/V audio interface=%u endpoint=%02x cap=%u interval=%u rate_readback=%u; "
            "independent 4x16 USB queue / 65536-byte PCM ring.\n",
            test.mode.interface, test.mode.endpoint, test.mode.packet_capacity, test.mode.interval,
@@ -1397,13 +1544,16 @@ static void av_audio_close(void)
     const AudioStream *stream = &av_audio.stream;
     report("A/V audio stop reason=%u failure=%d cancel=%d submitted=%u consumed=%u drained=%u "
            "bytes=%llu packets=%u empty=%u lengths=%u..%u rejected=%u peak=%u fatal=%u "
-           "span_ms=%llu rate_valid=%u setup_rejected=%u\n",
+           "span_ms=%llu rate_valid=%u setup_rejected=%u natural_drain=%u\n",
            av_audio.reason, av_audio.failure, av_audio.cancel_result, av_audio.queue.submitted,
            av_audio.queue.consumed, av_audio.queue.drained, (unsigned long long)stream->bytes,
            stream->packets, stream->empty, stream->smallest, stream->largest, stream->rejected,
            stream->peak, atomic_load(&stream->failed),
            (unsigned long long)(stream->last_ms - stream->first_ms), audio_stream_valid(stream),
-           av_audio.setup_rejected);
+           av_audio.setup_rejected, av_audio.natural_drain);
+    report("A/V audio concealment: silent_bytes=%llu actual_PCM_bytes=%llu consecutive_loss_ms=%u\n",
+           (unsigned long long)stream->concealed_bytes, (unsigned long long)stream->bytes,
+           stream->gap_packets);
     report("A/V initial USB timing: setup_to_queue_ms=%u worker_ms=%u data=%p sizes=%p; "
            "request offsets from audio start.\n",
            av_audio.setup_to_queue_ms, av_audio.worker_ms, (void *)audio_iso_data,
@@ -1424,9 +1574,15 @@ static void av_audio_close(void)
     av_audio_log_rejections();
     for (unsigned n = 0; n < av_audio.queue.drained; ++n)
         report("A/V audio drained result=%d\n", av_audio.queue.drain_results[n]);
-    s32 result = WC04_SetAlternate(av_audio.handle, 0);
-    report("A/V audio idle alternate=%ld\n", (long)result);
-    USB_CloseDevice(&av_audio.handle);
+    if (usb_session.microphone_selected && usb_session.video_changed)
+        report("A/V microphone stays selected; IOS58 cannot select it again after a video "
+               "alternate change.\n");
+    else {
+        s32 result = WC04_SetAlternate(av_audio.handle, 0);
+        report("A/V audio idle alternate=%ld\n", (long)result);
+        USB_CloseDevice(&av_audio.handle);
+        usb_session.microphone_selected = false;
+    }
     av_audio.opened = false;
     iso_trace_dump(log_audio_trace);
 }
@@ -1444,7 +1600,7 @@ static IsoStop av_audio_prime(unsigned before)
         if (exit_requested) return ISO_EXIT;
         if (down & WPAD_BUTTON_B) return ISO_CANCELLED;
         if (atomic_load(&av_audio.stream.failed)) return ISO_COMPLETION_FAILED;
-        unsigned received = audio_stream_position(&av_audio.stream);
+        unsigned received = audio_stream_received(&av_audio.stream);
         /* The main thread consumes only until the preview worker takes ownership. */
         audio_stream_discard(&av_audio.stream);
         if (received - before >= AUDIO_BLOCK_BYTES) {
@@ -1460,72 +1616,73 @@ static IsoStop av_audio_prime(unsigned before)
     }
 }
 
-static bool av_video_idle(s32 handle, const UvcMode *mode, bool *video_changed)
+static IsoStop av_enable_video(s32 handle, const UvcMode *mode, UvcAlternate *alt,
+                               bool *video_changed)
 {
-    if (!mode->configuration || !mode->alt_count || mode->alt_count > WC04_MAX_ALTS) return false;
-    /* Discovery checked the configuration. VEN's synchronous setter establishes
-     * idle state; the existing UVC exchange validates preparation before audio. */
+    atomic_store(&av_audio.phase, AV_VIDEO_PREPARING);
+    report("A/V starting UVC controls after microphone reception: PCM_bytes=%u\n",
+           audio_stream_received(&av_audio.stream));
+    if (!probe_camera(handle, mode, alt)) return ISO_SUBMIT_FAILED;
+    if (atomic_load(&av_audio.stream.failed)) return ISO_COMPLETION_FAILED;
+    atomic_store(&av_audio.phase, AV_VIDEO_PREPARED);
+    /* Earlier PCM and concealed silence cannot satisfy the post-control gate. */
+    IsoStop result = av_audio_prime(audio_stream_received(&av_audio.stream));
+    if (result != ISO_RUNNING) return result;
+    atomic_store(&av_audio.phase, AV_VIDEO_ENABLING);
+    av_audio_stop();
+    report("A/V audio paused before video enable: reason=%u failure=%d cancel=%d "
+           "PCM_bytes=%u submitted=%u consumed=%u drained=%u fatal=%u rejected=%u "
+           "natural_drain=%u; worker joined.\n",
+           av_audio.reason, av_audio.failure, av_audio.cancel_result,
+           audio_stream_position(&av_audio.stream), av_audio.queue.submitted,
+           av_audio.queue.consumed, av_audio.queue.drained, atomic_load(&av_audio.stream.failed),
+           av_audio.stream.rejected, av_audio.natural_drain);
+    av_audio_log_rejections();
+    if (atomic_load(&av_audio.stream.failed)) return ISO_COMPLETION_FAILED;
+    MicRateResult rate = av_audio.stream.rate;
+    uint64_t enabling = gettime();
     *video_changed = true;
-    s32 selected = WC04_SetAlternate(handle, 0);
-    report("A/V video alternate 0 via IOS: interface=%u result=%ld; exact success required.\n",
-           mode->interface, (long)selected);
-    return selected == 0;
+    bool active = activate_camera(handle, alt);
+    report("A/V video enable completed: success=%u elapsed_ms=%llu; audio queue paused.\n", active,
+           (unsigned long long)ticks_to_millisecs(gettime() - enabling));
+    if (!active) return ISO_SUBMIT_FAILED;
+    if (atomic_load(&av_audio.stream.failed)) return ISO_COMPLETION_FAILED;
+    if (!av_audio_queue_start(rate, AV_VIDEO_ACTIVE, gettime())) return ISO_SUBMIT_FAILED;
+    report("A/V audio queue restarted after video enable; fresh PCM required, "
+           "audio interface/rate unchanged.\n");
+    result = av_audio_prime(0);
+    if (result != ISO_RUNNING) return result;
+    report("A/V video active and fresh audio ready; starting video queue.\n");
+    return receive_photo(handle, mode, alt);
 }
 
-static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt, bool *video_changed)
+static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt, bool parked,
+                          bool *video_changed)
 {
     *video_changed = false;
-    draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height, "Checking microphone - B cancels");
-    report("A/V preparing video before starting audio.\n");
-    if (!av_video_idle(handle, mode, video_changed) || !probe_camera(handle, mode, alt)) {
-        report("A/V video preparation failed; audio not started.\n");
+    bind_usb_session(handle);
+    if (usb_session.audio_poisoned || (usb_session.video_changed && !parked)) {
+        report("A/V needs a restart: this launch's video alternate changes leave IOS58 without "
+               "microphone data.\n");
         av_recording.failed = true;
         return ISO_SUBMIT_FAILED;
     }
+    draw_screen(SCREEN_WAITING, NULL, mode->width, mode->height, "Checking microphone - B cancels");
+    if (!parked)
+        report("A/V video alternate unchanged since the camera appeared; starting audio first.\n");
     if (!av_audio_start(handle, mode)) {
         av_recording.failed = true;
         return ISO_SUBMIT_FAILED;
     }
-    atomic_store(&av_audio.phase, AV_VIDEO_PREPARED);
-    /* All readiness PCM must follow the completed UVC preparation. */
     IsoStop result = av_audio_prime(0);
-    if (result == ISO_RUNNING) {
-        atomic_store(&av_audio.phase, AV_VIDEO_ENABLING);
-        av_audio_stop();
-        report(
-            "A/V audio paused before video enable: reason=%u failure=%d cancel=%d "
-            "PCM_bytes=%u submitted=%u consumed=%u drained=%u fatal=%u rejected=%u; worker joined.\n",
-            av_audio.reason, av_audio.failure, av_audio.cancel_result,
-            audio_stream_position(&av_audio.stream), av_audio.queue.submitted,
-            av_audio.queue.consumed, av_audio.queue.drained, atomic_load(&av_audio.stream.failed),
-            av_audio.stream.rejected);
-        av_audio_log_rejections();
-        if (atomic_load(&av_audio.stream.failed))
-            result = ISO_COMPLETION_FAILED;
-        else {
-            MicRateResult rate = av_audio.stream.rate;
-            uint64_t enabling = gettime();
-            *video_changed = true;
-            bool active = activate_camera(handle, alt);
-            report("A/V video enable completed: success=%u elapsed_ms=%llu; audio queue paused.\n",
-                   active, (unsigned long long)ticks_to_millisecs(gettime() - enabling));
-            if (!active)
-                result = ISO_SUBMIT_FAILED;
-            else if (atomic_load(&av_audio.stream.failed))
-                result = ISO_COMPLETION_FAILED;
-            else if (!av_audio_queue_start(rate, AV_VIDEO_ACTIVE, gettime()))
-                result = ISO_SUBMIT_FAILED;
-            else {
-                report("A/V audio queue restarted after video enable; fresh PCM required, "
-                       "audio interface/rate unchanged.\n");
-                result = av_audio_prime(0);
-                if (result == ISO_RUNNING) {
-                    report("A/V video active and fresh audio ready; starting video queue.\n");
-                    result = receive_photo(handle, mode, alt);
-                }
-            }
-        }
-    }
+    if (result == ISO_RUNNING && !parked)
+        result = av_enable_video(handle, mode, alt, video_changed);
+    else if (result == ISO_RUNNING) {
+        atomic_store(&av_audio.phase, AV_VIDEO_ACTIVE);
+        report("A/V parked video and fresh audio ready; starting video queue.\n");
+        result = receive_photo(handle, mode, alt);
+    } else if (parked && (result == ISO_TIMEOUT || result == ISO_COMPLETION_FAILED))
+        usb_session.audio_poisoned = true;
     if (result == ISO_SUBMIT_FAILED || result == ISO_COMPLETION_FAILED || result == ISO_TIMEOUT)
         av_recording.failed = true;
     report("A/V startup/capture outcome=%u; microphone phase=%u.\n", result,
@@ -1540,7 +1697,7 @@ static void stop_video_stream(s32 handle, bool video_changed)
         report("Stop streaming skipped: video alternate was not changed by this attempt.\n");
         return;
     }
-    s32 stopped = WC04_SetAlternate(handle, 0);
+    s32 stopped = set_video_alternate(handle, 0);
     report("Stop streaming: %ld\n", (long)stopped);
 }
 
@@ -1580,7 +1737,7 @@ int main(void)
     mounted = fatMountSimple("sd", &__io_wiisd);
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
-    report("\nWiiCam 0.2.15 diagnostic - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam 0.2.20 parked-video sound test - IOS %u\n", IOS_GetVersion());
     report("Log timestamps: Wii clock and monotonic seconds since app start.\n");
     report(
         "Experimental A/V: MJPEG 10 fps and PCM16 mono 16 kHz. Silent video and microphone test retained.\n");
@@ -1662,15 +1819,17 @@ int main(void)
             av_recorder_init(&av_recording, &av_audio.stream, av_jpeg);
             snprintf(status, sizeof(status), "Camera not found - A retries, B menu");
             UvcMode mode;
-            if (find_camera(&handle, width, height, &mode)) {
-                UvcAlternate alt;
+            UvcAlternate alt;
+            bool parked = take_parked_camera(width, height, &handle, &mode, &alt);
+            if (parked || find_camera(&handle, width, height, &mode)) {
                 IsoStop result = ISO_SUBMIT_FAILED;
-                bool video_changed = true;
+                bool video_changed = !parked;
                 if (screen_info.audio)
-                    result = receive_av(handle, &mode, &alt, &video_changed);
-                else if (negotiate(handle, &mode, &alt))
+                    result = receive_av(handle, &mode, &alt, parked, &video_changed);
+                else if (parked || negotiate(handle, &mode, &alt))
                     result = receive_photo(handle, &mode, &alt);
-                stop_video_stream(handle, video_changed);
+                if (!park_video_stream(&mode, &alt, result))
+                    stop_video_stream(handle, video_changed);
                 snprintf(status, sizeof(status), "%s",
                          result == ISO_CANCELLED ? "Open viewfinder to start the camera."
                          : result == ISO_TIMEOUT ? "No frames - A retries, B menu"
@@ -1683,6 +1842,8 @@ int main(void)
                     if (av_recording.saved)
                         snprintf(status, sizeof(status), "Saved %s",
                                  strrchr(av_recording.path, '/') + 1);
+                    else if (sound_needs_restart(width, height, status, sizeof(status)))
+                        idle_page = SCREEN_MENU;
                     else
                         snprintf(status, sizeof(status), "%s",
                                  av_recording.failed ? "Audio/video not saved - see log"
@@ -1721,6 +1882,7 @@ int main(void)
         }
         VIDEO_WaitVSync();
     }
+    release_camera();
     if (usb_ready) USB_Deinitialize();
     if (log_file) fclose(log_file);
     if (mounted) fatUnmount("sd:");

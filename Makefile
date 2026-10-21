@@ -46,6 +46,7 @@ test: build/ui_assets.h | build
 	./build/test_iso_trace
 	python3 tests/test_iso_trace_usb.py --cc "$(HOST_CC)"
 	python3 tests/test_av_startup.py --cc "$(HOST_CC)"
+	python3 tests/test_mic_startup.py --cc "$(HOST_CC)"
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -pthread -Isource source/audio_stream.c source/av_avi.c source/av_recorder.c source/storage.c tests/test_av.c -o build/test_av
 	./build/test_av
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c source/microphone.c tests/test_microphone.c -o build/test_microphone

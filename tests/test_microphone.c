@@ -64,11 +64,16 @@ int main(void)
     uint8_t data[32];
     for (unsigned fault = 0; fault <= 7; ++fault) {
         Control state = {.fault = fault};
-        MicRateResult expected = fault == 0   ? MIC_RATE_OK
-                                 : fault == 6 ? MIC_RATE_UNREADABLE
-                                              : MIC_RATE_FAILED;
-        assert(microphone_set_rate(&entry, &mode, control, &state, data) == expected);
-        assert(state.calls == ((fault == 1 || fault == 2 || fault == 7) ? 1u : 2u));
+        bool set_failed = fault == 1 || fault == 2 || fault == 7;
+        assert(microphone_set_rate(&entry, &mode, control, &state, data)
+               == (set_failed ? MIC_RATE_FAILED : MIC_RATE_UNREADABLE));
+        assert(state.calls == 1);
+        CameraEntry other = entry;
+        other.pid ^= 1;
+        state = (Control){.fault = fault};
+        assert(microphone_set_rate(&other, &mode, control, &state, data)
+               == (fault == 0 ? MIC_RATE_OK : MIC_RATE_FAILED));
+        assert(state.calls == (set_failed ? 1u : 2u));
     }
     for (unsigned n = 0; n < 10; ++n) {
         CameraEntry other = entry;
@@ -179,30 +184,85 @@ int main(void)
         assert(microphone_pcm_packet(&pcm, packet, length, 192) == valid);
         assert(pcm.failed == !valid);
     }
+    /* No payload may be read from an IOS transaction-error slot. */
+    const uint8_t *inaccessible = (const uint8_t *)(uintptr_t)1;
     microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
-    pcm.rejection_budget = MIC_MAX_REJECTED_PACKETS;
-    memset(samples + 1, 0x55, MIC_BYTES);
-    const size_t invalid_lengths[] = {31, 193, 194, 65535};
-    for (unsigned n = 0; n < 4; ++n) {
-        assert(microphone_pcm_packet(&pcm, packet, 32, 192));
-        size_t before = pcm.size;
-        assert(microphone_pcm_packet(&pcm, packet, invalid_lengths[n], 192));
-        assert(pcm.size == before && pcm.rejected == n + 1 && !pcm.failed);
-        assert(pcm.rejected_lengths[n] == invalid_lengths[n]
-               && pcm.rejected_indices[n] == n * 2 + 1);
-        assert(pcm.data[pcm.size] == 0x55);
-    }
-    assert(pcm.packets == 4 && pcm.size == 128);
-    assert(!microphone_pcm_packet(&pcm, packet, 33, 192));
-    assert(pcm.failed && pcm.rejected == 5 && pcm.size == 128);
+    pcm.recover_transactions = true;
+    memset(pcm.data, 0x55, MIC_BYTES);
+    for (unsigned n = 0; n < 500; ++n)
+        assert(microphone_pcm_packet(&pcm, inaccessible, 0x1000, 192));
+    assert(pcm.rejected == 500 && !pcm.failed && !pcm.size && !pcm.received
+           && !pcm.concealed_bytes && !pcm.packets);
     assert(!microphone_capture_valid(MIC_RATE_UNREADABLE, &pcm, 5000));
-    assert(samples[0] == 0xa5 && samples[MIC_BYTES + 1] == 0x5a);
+    for (size_t n = 0; n < MIC_BYTES; ++n)
+        assert(pcm.data[n] == 0x55);
+    assert(microphone_pcm_packet(&pcm, packet, 0, 192));
+    assert(!pcm.received && !pcm.size && pcm.empty == 1);
+    for (unsigned n = 0; n < MIC_BYTES / 32; ++n)
+        assert(microphone_pcm_packet(&pcm, packet, 32, 192));
+    assert(pcm.received == MIC_BYTES && !pcm.concealed_bytes && !pcm.failed);
+    assert(microphone_capture_valid(MIC_RATE_UNREADABLE, &pcm, 5000));
+
+    /* Fifty spaced 1 ms losses retain a five-second timeline and bounded silence. */
     microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
-    pcm.rejection_budget = MIC_MAX_REJECTED_PACKETS;
+    pcm.recover_transactions = true;
+    for (unsigned n = 0; n < MIC_BYTES / 32; ++n) {
+        bool lost = n % 100 == 99;
+        assert(microphone_pcm_packet(&pcm, lost ? inaccessible : packet,
+                                     lost ? 0x1000 : 32, 192));
+        for (unsigned j = 0; j < 32; ++j)
+            assert(pcm.data[n * 32 + j] == (lost ? 0 : packet[j]));
+    }
+    assert(pcm.size == MIC_BYTES && pcm.received == MIC_BYTES - 50 * 32
+           && pcm.concealed_bytes == 50 * 32 && pcm.rejected == 50 && pcm.peak == 32768);
+    assert(microphone_capture_valid(MIC_RATE_UNREADABLE, &pcm, 5000));
+    for (unsigned n = 0; n < MIC_MAX_REJECTED_PACKETS; ++n)
+        assert(pcm.rejected_lengths[n] == 0x1000 && pcm.rejected_indices[n] == n * 100 + 99);
+
+    microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
+    pcm.recover_transactions = true;
+    assert(microphone_pcm_packet(&pcm, packet, 32, 192));
+    for (unsigned n = 0; n < 10; ++n)
+        assert(microphone_pcm_packet(&pcm, inaccessible, 0x1000, 192));
+    assert(microphone_pcm_packet(&pcm, packet, 0, 192));
+    assert(!microphone_pcm_packet(&pcm, inaccessible, 0x1000, 192));
+    assert(pcm.failed && pcm.received == 32 && pcm.concealed_bytes == 320 && pcm.size == 352);
+
+    /* Short bursts cannot bypass the cumulative one-percent loss allowance. */
+    microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
+    pcm.recover_transactions = true;
+    for (unsigned n = 0; n < 10; ++n) {
+        assert(microphone_pcm_packet(&pcm, packet, 32, 192));
+        assert(microphone_pcm_packet(&pcm, inaccessible, 0x1000, 192));
+    }
+    assert(microphone_pcm_packet(&pcm, packet, 32, 192));
+    assert(!microphone_pcm_packet(&pcm, inaccessible, 0x1000, 192));
+    assert(pcm.failed && pcm.received == 352 && pcm.concealed_bytes == 320);
+
+    const size_t invalid_lengths[] = {31, 193, 194, 0x1001, 0x2000, 65535};
+    for (unsigned n = 0; n < sizeof(invalid_lengths) / sizeof(*invalid_lengths); ++n) {
+        for (unsigned started = 0; started < 2; ++started) {
+            microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
+            pcm.recover_transactions = true;
+            if (started) assert(microphone_pcm_packet(&pcm, packet, 32, 192));
+            assert(!microphone_pcm_packet(&pcm, inaccessible, invalid_lengths[n], 192));
+            assert(pcm.failed && pcm.rejected == 1 && pcm.size == started * 32);
+        }
+    }
+    microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
+    assert(!microphone_pcm_packet(&pcm, inaccessible, 0x1000, 192));
+    microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
+    pcm.recover_transactions = true;
+    assert(!microphone_pcm_packet(&pcm, inaccessible, 0x1000, 128));
+    microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
+    pcm.recover_transactions = true;
+    assert(microphone_pcm_packet(&pcm, packet, 64, 192));
+    assert(!microphone_pcm_packet(&pcm, inaccessible, 0x1000, 192));
+    assert(pcm.size == 64 && !pcm.concealed_bytes);
+    microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
+    pcm.recover_transactions = true;
     assert(!microphone_pcm_packet(&pcm, NULL, 32, 192));
-    microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
-    pcm.rejection_budget = MIC_MAX_REJECTED_PACKETS + 1;
-    assert(!microphone_pcm_packet(&pcm, packet, 32, 192) && !pcm.size);
+    assert(samples[0] == 0xa5 && samples[MIC_BYTES + 1] == 0x5a);
     microphone_pcm_init(&pcm, samples + 1, MIC_BYTES);
     assert(!microphone_capture_valid(MIC_RATE_OK, &pcm, 5000));
     assert(!microphone_capture_valid(MIC_RATE_UNREADABLE, &pcm, 5000));
@@ -211,5 +271,5 @@ int main(void)
     fclose(partial);
     free(samples);
     puts(
-        "PASS: physical UAC fields, ambiguous/changed IOS pairing, strict rate controls, observed readback exception, timing guard, bounded whole-packet rejection, packet bounds, PCM/WAV and partial rejection");
+        "PASS: physical UAC fields, ambiguous/changed IOS pairing, strict rate controls, exact-profile readback skip and strict readback for other devices, timing guard, bounded transaction recovery, real PCM accounting, packet bounds, PCM/WAV and partial rejection");
 }
