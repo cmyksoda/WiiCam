@@ -93,16 +93,12 @@ test-photo: | build
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Isource source/photo.c tests/test_photo.c $(JPEG_LIBS) -o build/test_photo
 	./build/test_photo
 
-package:
-	@echo "This build contains local font-derived assets. Use make package-local for a private test only."
-	@exit 1
+package: all
+	python3 tools/package.py
 
-.PHONY: package-local ui-assets
+.PHONY: ui-assets
 ui-assets: | build
 	python3 tools/build_ui_assets.py --font "$(WC04_FONT)"
-
-package-local: all
-	python3 tools/package.py --local-test
 
 clean:
 	rm -rf build dist/apps/wiicam/boot.dol

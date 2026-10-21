@@ -3,8 +3,8 @@
 # Copyright (c) 2026 cmyksoda
 """Package only the WiiCam runtime and its applicable notices."""
 
-import argparse
 import json
+import re
 import shutil
 from hashlib import sha256
 from pathlib import Path
@@ -55,26 +55,21 @@ def validate_dol(data):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--local-test', action='store_true')
-    args = parser.parse_args()
-    if not args.local_test:
-        parser.error('font-derived asset redistribution is unverified; only --local-test is supported')
     font = json.loads((ROOT / 'build/ui-font.json').read_text())
-    for name in ('HOME-PROVENANCE.json',):
-        shutil.copyfile(ROOT / 'assets' / name, APP / 'licenses' / name)
+    shutil.copyfile(ROOT / 'assets/HOME-PROVENANCE.json', APP / 'licenses/HOME-PROVENANCE.json')
     (APP / 'licenses/UI-font.txt').write_text(
-        'PRIVATE LOCAL TEST ONLY\nFont: ' + ' '.join(font['name']) +
+        'Font: ' + ' '.join(font['name']) + '\n' + font['copyright'] + '\n' + font['trademark'] +
         '\nSource font SHA-256: ' + font['sha256'] +
-        '\nThis DOL embeds rasterized glyphs from the selected local font.\n'
-        'The full font file is not included. Redistribution rights are not established.\n'
-        'Do not publish this binary without resolving font and artwork permissions.\n')
+        '\n\nThe interface text in boot.dol is drawn from bitmaps rasterized from this font.\n'
+        'The font file itself is not included. No redistribution license was obtained;\n'
+        'the author decided on October 21, 2026 to include these glyphs in WiiCam releases.\n')
     data = (APP / "boot.dol").read_bytes()
     validate_dol(data)
     (APP / "licenses/WC04-GPLv3.txt").write_bytes((ROOT / "LICENSE").read_bytes())
     # Preserve the exact metadata bytes in the package.
     metadata = (APP / "meta.xml").read_bytes()
-    archive = ROOT / "dist/WiiCam-0.2.22-local-test.zip"
+    version = re.search(rb"<version>([^<]+)</version>", metadata).group(1).decode()
+    archive = ROOT / f"dist/WiiCam-{version}.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
         for name in FILES:
             package.write(APP / name, f"apps/wiicam/{name}")
