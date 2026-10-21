@@ -20,7 +20,7 @@ body:
     id: usb-id
     attributes:
       label: USB ID
-      description: Two four-digit codes like 0c45:6366. WiiCam's session log shows it on the "Candidate" lines, or on a PC run `lsusb` (Linux) or look in Device Manager (Windows).
+      description: Two four-digit codes like 0c45:6366. If WiiCam saw the camera, its session log shows the ID on the "Candidate" lines. If not, plug the camera into a computer and run `lsusb` (Linux), look under USB in System Information (Mac), or check Device Manager → the camera → Properties → Details → Hardware Ids (Windows).
       placeholder: 0c45:6366
 
   - type: input
@@ -35,7 +35,7 @@ body:
   - type: dropdown
     id: console
     attributes:
-      label: Console
+      label: What console did you test on?
       options:
         - Wii
         - Wii U (vWii)
@@ -46,10 +46,11 @@ body:
   - type: dropdown
     id: photo
     attributes:
-      label: Photos
+      label: Did photos work?
       options:
         - "Yes"
         - "No"
+        - Couldn't try, WiiCam didn't detect the camera
         - Didn't try
     validations:
       required: true
@@ -57,10 +58,11 @@ body:
   - type: dropdown
     id: video
     attributes:
-      label: Video
+      label: Did video work?
       options:
         - "Yes"
         - "No"
+        - Couldn't try, WiiCam didn't detect the camera
         - Didn't try
     validations:
       required: true
@@ -68,10 +70,11 @@ body:
   - type: dropdown
     id: sound
     attributes:
-      label: Video with sound
+      label: Did video + audio work?
       options:
         - "Yes"
         - "No"
+        - Couldn't try, WiiCam didn't detect the camera
         - The camera has no microphone
         - Didn't try
     validations:
