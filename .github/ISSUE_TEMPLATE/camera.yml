@@ -87,7 +87,7 @@ body:
       placeholder: 320 x 240, 640 x 480
 
   - type: textarea
-    id: log
+    id: photochannel
     attributes:
       label: Session log
       description: WiiCam keeps a short log on your SD card at `wc04-camera/session.log`. Drag the file into this box, or paste the part from your session.
