@@ -23,7 +23,7 @@ Other UVC 1.0 MJPEG cameras may work. If you try one, please open an issue with 
 - Camera refresh and 4:3 or widescreen display.
 - Photo Channel compatibility: photos ~~and videos~~ are saved in folders the Photo Channel can see.
 
-*Videos were supported in pre-release versions, they are currently broken. this is a known regression and is tracked in [issue #2](https://github.com/cmyksoda/WiiCam/issues/2).*
+*Videos were supported in pre-release versions, they are currently unreliable, with different cameras posting varying results. this is a known regression and is tracked in [issue #2](https://github.com/cmyksoda/WiiCam/issues/2).*
 
 ## Install
 
