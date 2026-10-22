@@ -6,9 +6,10 @@ A **Wii USB camera app**, inspired by [ZodiaKGalXy's GBAtemp request](https://gb
 
 | Camera | Photo | Video | Sound |
 |---|---|---|---|
-| Ubisoft / Hercules WC04 | Yes | Yes | Not tested |
+| Ubisoft / Hercules WC04 | Yes | Yes | No microphone |
 | Generic W2 1080p webcam (USB ID 0c45:6366) | Yes | Yes | Yes, at every size |
 | Logitech C920 PRO HD (USB ID 046d:08e5) | Not detected yet | Not detected yet | Not detected yet |
+| AVerMedia Live Streamer Cam 313 (USB ID 07ca:313a) | Yes | Yes | Not detected yet |
 
 The Wii's USB system (IOS58) doesn't list the C920 at all, so WiiCam can't see it yet. Work on supporting it is tracked in [issue #1](https://github.com/cmyksoda/WiiCam/issues/1).
 
