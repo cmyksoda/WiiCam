@@ -6,7 +6,7 @@ A **Wii USB camera app**, inspired by [ZodiaKGalXy's GBAtemp request](https://gb
 
 | Camera | Photo | Video | Sound |
 |---|---|---|---|
-| Ubisoft / Hercules WC04 | Yes | Yes | No microphone |
+| Ubisoft / Hercules WC04 (USB ID 06f8:c004) | Yes | Yes | No microphone |
 | Generic W2 1080p webcam (USB ID 0c45:6366) | Yes | Yes | Yes, at every size |
 | Logitech C920 PRO HD (USB ID 046d:08e5) | Not detected yet | Not detected yet | Not detected yet |
 | AVerMedia Live Streamer Cam 313 (USB ID 07ca:313a) | Yes | Yes | Not detected yet |
