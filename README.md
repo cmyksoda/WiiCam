@@ -38,7 +38,7 @@ Photos are saved to `SD:/DCIM/100WC04` and videos to `SD:/wc04-camera/videos`.
 
 In testing, sound works at every resolution. However, it only stays available at the size the camera first opened with. To record sound at another size, restart WiiCam; the menu tells you when.
 
-Sound needs a camera with a USB microphone that records 16 kHz mono.
+Sound needs a camera with a built-in microphone that records 16 kHz mono.
 
 ## Controls
 
