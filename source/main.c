@@ -774,7 +774,7 @@ static bool consume_capture(void *context, const IsoSlot *slot)
     for (unsigned i = 0; i < ISO_PACKETS; ++i) {
         unsigned length = slot->sizes[i];
         if (length > alt->capacity) {
-            frame->discard = true;
+            uvc_packet_failed(frame, length);
             continue;
         }
         /* IOS retains requested strides; returned sizes are actual lengths. */
@@ -792,10 +792,17 @@ static void report_video_stats(const UvcStats *stats)
 {
     report("USB video: %u packets (%u empty, %u header only), %u with the error bit, %u bad "
            "headers, %u overflows; frames: %u whole (%u ended by FID, %u with %u bytes after the "
-           "end), %u without EOF, %u without JPEG ends, %u empty.\n",
+           "end), %u without EOF, %u without JPEG ends, %u empty, %u with a failed packet.\n",
            stats->packets, stats->empty, stats->header_only, stats->errors, stats->bad_headers,
            stats->overflow, stats->complete, stats->fid_ends, stats->normalized_frames,
-           stats->padding_bytes, stats->missing_eof, stats->invalid_jpeg, stats->empty_frames);
+           stats->padding_bytes, stats->missing_eof, stats->invalid_jpeg, stats->empty_frames,
+           stats->discarded);
+    if (stats->failed_packets)
+        report("USB video: %u failed packets: transaction error %u, babble %u, buffer error %u, "
+               "still active %u; first %04x %04x %04x %04x\n",
+               stats->failed_packets, stats->failure_bits[0], stats->failure_bits[1],
+               stats->failure_bits[2], stats->failure_bits[3], stats->failure_sample[0],
+               stats->failure_sample[1], stats->failure_sample[2], stats->failure_sample[3]);
     for (unsigned n = 0; n < stats->samples; ++n) {
         const UvcDropSample *d = &stats->sample[n];
         report("Dropped frame %u: %c, %lu bytes, starts %02x %02x, ends %02x %02x %02x %02x %02x "

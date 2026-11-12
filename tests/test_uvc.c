@@ -160,6 +160,17 @@ static void test_diagnostics(void)
     assert(frame.stats.sample[0].size == 2 && frame.stats.sample[0].head[0] == 0xff);
     assert(frame.stats.sample[0].tail[6] == 0xff && frame.stats.sample[0].tail[7] == 0xd8);
 
+    /* A packet IOS marks as failed loses its frame; the status bits are counted. */
+    uvc_frame_init(&frame, buffer, sizeof(buffer));
+    assert(!uvc_packet(&frame, start, sizeof(start)));
+    uvc_packet_failed(&frame, 0x1000);
+    uvc_packet_failed(&frame, 0x4180);
+    const uint8_t last[] = {2, 0x82, 0xff, 0xd9};
+    assert(!uvc_packet(&frame, last, sizeof(last)));
+    assert(frame.stats.failed_packets == 2 && frame.stats.failure_bits[0] == 1);
+    assert(frame.stats.failure_bits[2] == 1 && frame.stats.failure_sample[1] == 0x4180);
+    assert(frame.stats.discarded == 1 && frame.dropped == 1 && !frame.stats.invalid_jpeg);
+
     /* A camera that never sets EOF ends each frame by toggling FID. */
     uvc_frame_init(&frame, buffer, sizeof(buffer));
     const uint8_t whole[] = {2, 0x80, 0xff, 0xd8, 0xff, 0xd9}, next[] = {2, 0x81, 0xff, 0xd8};

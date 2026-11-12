@@ -331,6 +331,16 @@ static void finish(UvcFrame *frame, size_t end)
     }
 }
 
+void uvc_packet_failed(UvcFrame *frame, unsigned length)
+{
+    UvcStats *stats = &frame->stats;
+    ++stats->failed_packets;
+    for (unsigned bit = 0; bit < 4; ++bit)
+        stats->failure_bits[bit] += length >> (12 + bit) & 1;
+    if (stats->failure_samples < 4) stats->failure_sample[stats->failure_samples++] = (uint16_t)length;
+    frame->discard = true;
+}
+
 bool uvc_fid_ends_frame(UvcFrame *frame, const uint8_t *packet, size_t length)
 {
     if (length < 2 || packet[0] < 2 || packet[0] > length || frame->fid == -1
@@ -395,12 +405,12 @@ bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length)
     size_t normalized = jpeg_length(frame);
     if (!normalized) {
         ++frame->dropped;
-        if (!frame->discard) {
-            if (!frame->size)
-                ++frame->stats.empty_frames;
-            else
-                ++frame->stats.invalid_jpeg;
-        }
+        if (frame->discard)
+            ++frame->stats.discarded;
+        else if (!frame->size)
+            ++frame->stats.empty_frames;
+        else
+            ++frame->stats.invalid_jpeg;
         if (frame->size) note_drop(frame, 'J');
         return false;
     }

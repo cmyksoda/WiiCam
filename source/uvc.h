@@ -59,7 +59,10 @@ typedef struct {
     unsigned packets, bytes, empty, header_only, payload_packets, payload_bytes;
     unsigned bad_headers, errors, eof, fid_changes, overflow;
     unsigned missing_eof, empty_frames, invalid_jpeg, complete, fid_ends;
-    unsigned normalized_frames, padding_bytes;
+    unsigned normalized_frames, padding_bytes, discarded;
+    /* IOS reports a failed ISO packet with the EHCI status nibble in bits 15:12 of its length. */
+    unsigned failed_packets, failure_bits[4], failure_samples;
+    uint16_t failure_sample[4];
     unsigned samples;
     UvcDropSample sample[UVC_DROP_SAMPLES];
 } UvcStats;
@@ -100,6 +103,7 @@ bool uvc_negotiate(const UvcMode *mode, UvcAlternate *alt, uint8_t data[UVC_PROB
                    UvcControlTransfer transfer, void *context);
 void uvc_frame_init(UvcFrame *frame, uint8_t *data, size_t capacity);
 bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length);
+void uvc_packet_failed(UvcFrame *frame, unsigned length);
 /* True when this packet's FID change ends a valid frame that had no EOF; call before uvc_packet. */
 bool uvc_fid_ends_frame(UvcFrame *frame, const uint8_t *packet, size_t length);
 
