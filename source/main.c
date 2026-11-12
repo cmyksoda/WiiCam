@@ -1347,6 +1347,12 @@ static bool review(const char *path, unsigned width, unsigned height, char *stat
 
 int main(void)
 {
+    // IOS reads an attached camera within milliseconds of launch, so the limit has to rise first.
+    char patch_detail[80] = "";
+    IosPatchResult patch = IOS_GetVersion() == 58
+                               ? ios_patch_config_limit(patch_detail, sizeof(patch_detail))
+                               : IOS_PATCH_WRONG_BUILD;
+    bool patched_at_start = patch == IOS_PATCH_APPLIED;
     session_start = gettime();
     bool buffers_ready = allocate_usb_buffers();
     VIDEO_Init();
@@ -1373,12 +1379,12 @@ int main(void)
     bool patched = false;
     if (IOS_GetVersion() == 58) {
         usb_ready = buffers_ready && USB_Initialize() >= 0;
-        // After USB_Initialize so IOS has the USB core module loaded in MEM2.
-        char patch_detail[80];
-        IosPatchResult patch = ios_patch_config_limit(patch_detail, sizeof(patch_detail));
+        // Under some launchers IOS loads its USB core only now; a camera it already read needs a replug.
+        if (!patched_at_start) patch = ios_patch_config_limit(patch_detail, sizeof(patch_detail));
         patched = patch == IOS_PATCH_APPLIED;
         report("C920 limit patch: %s (%s)\n",
-               patched                            ? "applied"
+               patched_at_start                   ? "applied at start"
+               : patched                          ? "applied after USB start"
                : patch == IOS_PATCH_NO_AHBPROT    ? "skipped, no access"
                : patch == IOS_PATCH_BUF_NOT_EMPTY ? "skipped, no buffer"
                                                   : "skipped, wrong IOS build",

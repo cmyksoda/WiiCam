@@ -7,7 +7,7 @@
   <short_description>Test build for WiiCam issues #1, #3 and #4</short_description>
   <long_description>A test build for WiiCam. It installs as its own app and doesn't replace WiiCam.
 
-Issue #1: cameras with more than 2,048 bytes of USB descriptors, like the Logitech C920, can now be listed. With such a camera, start this app, then unplug the camera and plug it back in, then press A.
+Issue #1: cameras with more than 2,048 bytes of USB descriptors, like the Logitech C920, can now be listed. Plug the camera in and start this app as usual. If it ever says "Camera not found - replug it", unplug the camera, plug it back in and press A.
 
 Issues #2 and #3: videos from cameras that leave the Huffman tables out of their frames now carry them, so the Photo Channel can play the videos.
 
