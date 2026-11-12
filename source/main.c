@@ -1516,8 +1516,10 @@ int main(void)
         // Test builds only: lets testers compare the camera's packet size with the largest one.
         if (idle_page == SCREEN_MENU && (down & WPAD_BUTTON_DOWN)) {
             largest_packets = !largest_packets;
-            snprintf(status, sizeof(status), "Test: USB packets %s",
-                     largest_packets ? "largest" : "as the camera asks");
+            // A parked stream is reused as it is, so the switch waits for the next launch.
+            snprintf(status, sizeof(status), "Test: USB packets %s%s",
+                     largest_packets ? "largest" : "as the camera asks",
+                     usb_session.video_parked ? " after a restart" : "");
             menu = true;
         }
 
