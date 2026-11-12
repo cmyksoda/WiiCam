@@ -1359,7 +1359,10 @@ int main(void)
     video = VIDEO_GetPreferredMode(NULL);
     xfb[0] = SYS_AllocateFramebuffer(video);
     xfb[1] = SYS_AllocateFramebuffer(video);
-    if (!xfb[0] || !xfb[1]) return 1;
+    if (!xfb[0] || !xfb[1]) {
+        ios_patch_restore();
+        return 1;
+    }
 
     widescreen = CONF_GetAspectRatio() == CONF_ASPECT_16_9;
     VIDEO_Configure(video);
