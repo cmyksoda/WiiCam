@@ -9,7 +9,7 @@
 
 Issue #1: cameras with more than 2,048 bytes of USB descriptors, like the Logitech C920, can now be listed. Plug the camera in and start this app as usual. If it ever says "Camera not found - replug it", unplug the camera, plug it back in and press A.
 
-Issues #2 and #3: videos from cameras that leave the Huffman tables out of their frames now carry them, so the Photo Channel can play the videos.
+Issues #2 and #3: the Photo Channel refused videos from cameras that leave the Huffman tables out of their frames, or that pad the end of each frame with zero bytes, like the WC04. Videos now carry the tables and end each frame exactly, so the Photo Channel can play them.
 
 Issue #4: microphones that only record in stereo, or at 32 or 48 kHz, can now record sound. The C920's microphone is one of them. Microphones that list only a master volume control, like the AVerMedia Cam 313's, are accepted too.
 
