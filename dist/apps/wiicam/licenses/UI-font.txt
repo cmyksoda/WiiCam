@@ -4,5 +4,4 @@ RodinNTLGPro is a trademark of Fontworks Japan, Inc.
 Source font SHA-256: 2848d0d5d1b6452f201e50ee93f8356b6b91fb9305522a4481464ff80c3b1c1a
 
 The interface text in boot.dol is drawn from bitmaps rasterized from this font.
-The font file itself is not included. No redistribution license was obtained;
-the author decided on October 21, 2026 to include these glyphs in WiiCam releases.
+The font file itself is not included. No redistribution license was obtained.
