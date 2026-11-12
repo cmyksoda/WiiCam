@@ -3,6 +3,7 @@
  */
 #include "av_avi.h"
 #include "frame_limits.h"
+#include "mjpeg.h"
 #include <string.h>
 
 _Static_assert(MIC_RATE * 2u * AUDIO_FRAME_MS / 1000u == AUDIO_BLOCK_BYTES,
@@ -103,19 +104,26 @@ bool av_avi_has_space(const AvAvi *a, size_t length)
 {
     return !a->failed && !a->finished && a->file && a->frames < AV_MAX_FRAMES
            && length <= WC04_FRAME_CAPACITY
-           && 324ull + a->bytes + 16 + length + (length & 1) + AUDIO_BLOCK_BYTES + 8
+           && 324ull + a->bytes + 16 + length + MJPEG_DHT_BYTES + 1 + AUDIO_BLOCK_BYTES + 8
                       + (a->frames + 1) * 32
                   <= AVI_MAX_BYTES;
 }
 
-static bool chunk(AvAvi *a, const char *id, const uint8_t *data, unsigned length, unsigned index)
+/* Writes `length` bytes of data, with `extra` spliced in at `insert` when insert is nonzero. */
+static bool chunk(AvAvi *a, const char *id, const uint8_t *data, unsigned length, unsigned index,
+                  size_t insert, const uint8_t *extra, unsigned extra_length)
 {
     uint8_t prefix[8], pad = 0;
+    unsigned stored = length + (insert ? extra_length : 0);
     memcpy(prefix, id, 4);
-    le32(prefix + 4, length);
-    if (!write_bytes(a, prefix, 8) || !write_bytes(a, data, length)
-        || ((length & 1) && !write_bytes(a, &pad, 1)))
+    le32(prefix + 4, stored);
+    if (!write_bytes(a, prefix, 8)
+        || (insert ? !write_bytes(a, data, insert) || !write_bytes(a, extra, extra_length)
+                         || !write_bytes(a, data + insert, length - insert)
+                   : !write_bytes(a, data, length))
+        || ((stored & 1) && !write_bytes(a, &pad, 1)))
         return false;
+    length = stored;
     a->offsets[index] = 4 + a->bytes;
     a->lengths[index] = length;
     a->bytes += 8 + length + (length & 1);
@@ -127,11 +135,13 @@ bool av_avi_pair(AvAvi *a, const uint8_t *jpeg, size_t length, const uint8_t *pc
     if (!av_avi_has_space(a, length) || !pcm || !jpeg || length < 4 || jpeg[0] != 0xff
         || jpeg[1] != 0xd8 || jpeg[length - 2] != 0xff || jpeg[length - 1] != 0xd9)
         return false;
-    if (!chunk(a, "00dc", jpeg, (unsigned)length, a->frames * 2)
-        || !chunk(a, "01wb", pcm, AUDIO_BLOCK_BYTES, a->frames * 2 + 1))
+    size_t insert = mjpeg_dht_insert_at(jpeg, length);
+    if (!chunk(a, "00dc", jpeg, (unsigned)length, a->frames * 2, insert, mjpeg_dht,
+               MJPEG_DHT_BYTES)
+        || !chunk(a, "01wb", pcm, AUDIO_BLOCK_BYTES, a->frames * 2 + 1, 0, NULL, 0))
         return false;
     ++a->frames;
-    if (length > a->largest) a->largest = (unsigned)length;
+    if (a->lengths[a->frames * 2 - 2] > a->largest) a->largest = a->lengths[a->frames * 2 - 2];
     return true;
 }
 

@@ -14,12 +14,17 @@ typedef struct {
     atomic_uint produced, consumed, received;
     atomic_bool failed;
     MicRateResult rate;
+    unsigned channels, factor, phase;
+    int32_t sum;
     unsigned packets, empty, rejected, smallest, largest, peak, first_length, gap_packets;
     uint64_t bytes, concealed_bytes, first_ms, last_ms;
 } AudioStream;
 
 /* One USB producer, one writer/consumer. Positions wrap modulo unsigned. */
 void audio_stream_init(AudioStream *stream, MicRateResult rate);
+/* Mixes stereo to mono and averages each run of `factor` frames down to MIC_RATE.
+ * Call after init and before the first packet; init leaves mono at MIC_RATE. */
+bool audio_stream_set_format(AudioStream *stream, unsigned channels, unsigned factor);
 bool audio_stream_packet(AudioStream *stream, const uint8_t *data, unsigned length,
                          unsigned capacity, uint64_t now_ms);
 unsigned audio_stream_position(const AudioStream *stream);

@@ -3,6 +3,7 @@
  */
 #include "avi.h"
 #include "frame_limits.h"
+#include "mjpeg.h"
 #include <string.h>
 
 static void le32(uint8_t *p, uint32_t n)
@@ -81,7 +82,8 @@ bool avi_has_space(const Avi *a, size_t length)
 {
     return !a->failed && !a->finished && a->file && a->frames < AVI_MAX_FRAMES
            && length <= WC04_FRAME_CAPACITY
-           && (uint64_t)224 + a->bytes + 8 + length + (length & 1) + 8 + (a->frames + 1) * 16
+           && (uint64_t)224 + a->bytes + 8 + length + MJPEG_DHT_BYTES + 1 + 8
+                      + (a->frames + 1) * 16
                   <= AVI_MAX_BYTES;
 }
 
@@ -90,18 +92,24 @@ bool avi_append(Avi *a, const uint8_t *jpeg, size_t length)
     if (!avi_has_space(a, length) || !jpeg || length < 4 || jpeg[0] != 0xff || jpeg[1] != 0xd8
         || jpeg[length - 2] != 0xff || jpeg[length - 1] != 0xd9)
         return false;
+    size_t insert = mjpeg_dht_insert_at(jpeg, length);
+    size_t stored = length + (insert ? MJPEG_DHT_BYTES : 0);
     uint8_t chunk[8];
     memcpy(chunk, "00dc", 4);
-    le32(chunk + 4, (uint32_t)length);
+    le32(chunk + 4, (uint32_t)stored);
     const uint8_t pad = 0;
-    if (!write_bytes(a, chunk, 8) || !write_bytes(a, jpeg, length)
-        || ((length & 1) && !write_bytes(a, &pad, 1)))
+    if (!write_bytes(a, chunk, 8)
+        || (insert
+                ? !write_bytes(a, jpeg, insert) || !write_bytes(a, mjpeg_dht, MJPEG_DHT_BYTES)
+                      || !write_bytes(a, jpeg + insert, length - insert)
+                : !write_bytes(a, jpeg, length))
+        || ((stored & 1) && !write_bytes(a, &pad, 1)))
         return false;
     a->offsets[a->frames] = 4 + a->bytes;
-    a->lengths[a->frames] = (uint32_t)length;
+    a->lengths[a->frames] = (uint32_t)stored;
     ++a->frames;
-    a->bytes += (unsigned)(8 + length + (length & 1));
-    if (length > a->largest) a->largest = (unsigned)length;
+    a->bytes += (unsigned)(8 + stored + (stored & 1));
+    if (stored > a->largest) a->largest = (unsigned)stored;
     return true;
 }
 

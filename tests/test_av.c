@@ -2,13 +2,19 @@
 #define _GNU_SOURCE
 #include "av_recorder.h"
 #include "frame_limits.h"
+#include "mjpeg.h"
 #include <assert.h>
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 static AudioStream stream;
 static AvRecorder recorder;
 static uint8_t cached[WC04_FRAME_CAPACITY];
@@ -79,6 +85,54 @@ static void *producer(void *unused)
         assert(audio_stream_packet(&stream, data, 32, 192, n));
     }
     return NULL;
+}
+
+
+static void conversion_tests(void)
+{
+    /* 48 kHz stereo 440 Hz tone in 1 ms packets of 48 frames, both channels equal. */
+    audio_stream_init(&stream, MIC_RATE_OK);
+    assert(audio_stream_set_format(&stream, 2, 3));
+    uint8_t packet[192];
+    unsigned frame = 0;
+    for (unsigned ms = 0; ms < 1000; ++ms) {
+        for (unsigned n = 0; n < 48; ++n, ++frame) {
+            int16_t value = (int16_t)lrint(10000.0 * sin(2 * M_PI * 440.0 * frame / 48000.0));
+            for (unsigned c = 0; c < 2; ++c) {
+                packet[n * 4 + c * 2] = (uint8_t)(value & 255);
+                packet[n * 4 + c * 2 + 1] = (uint8_t)((uint16_t)value >> 8);
+            }
+        }
+        assert(audio_stream_packet(&stream, packet, sizeof(packet), 196, ms));
+    }
+    assert(audio_stream_position(&stream) == 32000 && stream.bytes == 32000);
+    assert(stream.peak > 9500 && stream.peak <= 10000);
+    static uint8_t out[32000];
+    assert(audio_stream_read(&stream, out, sizeof(out)));
+    for (unsigned n = 0; n < 16000; ++n) {
+        double expected = 0;
+        for (unsigned k = 0; k < 3; ++k)
+            expected += lrint(10000.0 * sin(2 * M_PI * 440.0 * (n * 3 + k) / 48000.0));
+        int16_t got = (int16_t)(out[2 * n] | out[2 * n + 1] << 8);
+        assert(fabs(got - expected / 3) <= 1);
+    }
+
+    /* A run split across packets carries over; a half frame is refused. */
+    audio_stream_init(&stream, MIC_RATE_OK);
+    assert(audio_stream_set_format(&stream, 2, 3));
+    const uint8_t two[8] = {10, 0, 20, 0, 30, 0, 40, 0};
+    const uint8_t four[16] = {50, 0, 60, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0};
+    assert(audio_stream_packet(&stream, two, 8, 196, 0) && !audio_stream_position(&stream));
+    assert(audio_stream_packet(&stream, four, 16, 196, 1) && audio_stream_position(&stream) == 4);
+    assert(audio_stream_read(&stream, out, 4) && out[0] == 35 && !out[1] && out[2] == 1 && !out[3]);
+    assert(!audio_stream_packet(&stream, two, 6, 196, 2));
+
+    audio_stream_init(&stream, MIC_RATE_OK);
+    assert(!audio_stream_set_format(&stream, 3, 1) && atomic_load(&stream.failed));
+    audio_stream_init(&stream, MIC_RATE_OK);
+    assert(!audio_stream_set_format(&stream, 1, 4));
+    audio_stream_init(&stream, MIC_RATE_OK);
+    assert(stream.channels == 1 && stream.factor == 1);
 }
 
 static void ring_tests(void)
@@ -219,6 +273,7 @@ static void start(const char *directory)
 int main(void)
 {
     memset(pcm, 0x21, sizeof(pcm));
+    conversion_tests();
     ring_tests();
     loss_tests();
     char directory[] = "build/av-test-XXXXXX";
@@ -266,8 +321,9 @@ int main(void)
            && recorder.avi.frames == 600);
     unlink(recorder.path);
     start(directory);
-    recorder.avi.bytes = AVI_MAX_BYTES - 324 - 8 - 32 - 16 - 3200 - 6;
-    assert(av_avi_has_space(&recorder.avi, 5));
+    /* Every frame reserves room for the standard tables and a pad byte. */
+    recorder.avi.bytes = AVI_MAX_BYTES - 324 - 8 - 32 - 16 - 3200 - 6 - MJPEG_DHT_BYTES - 1;
+    assert(av_avi_has_space(&recorder.avi, 6));
     assert(!av_avi_has_space(&recorder.avi, 7));
     assert(!av_avi_has_space(&recorder.avi, WC04_FRAME_CAPACITY + 1));
     assert(!av_recorder_stop(&recorder, 0, false));
@@ -309,5 +365,5 @@ int main(void)
     }
     assert(!rmdir(directory));
     puts(
-        "PASS: A/V ring bounds, rejected packets, concurrent unsigned wrap, rate guard, sample-clock holds/stale frames, interleaving/indexes, 60s/128MiB limits and write/index/header/seek/close cleanup");
+        "PASS: stereo/48 kHz conversion, A/V ring bounds, rejected packets, concurrent unsigned wrap, rate guard, sample-clock holds/stale frames, interleaving/indexes, 60s/128MiB limits and write/index/header/seek/close cleanup");
 }

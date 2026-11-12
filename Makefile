@@ -44,9 +44,9 @@ JPEG_LIBS ?= -ljpeg
 test: build/ui_assets.h | build
 	python3 tests/test_av_startup.py --cc "$(HOST_CC)"
 	python3 tests/test_mic_startup.py --cc "$(HOST_CC)"
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -pthread -Isource source/audio_stream.c source/av_avi.c source/av_recorder.c source/storage.c tests/test_av.c -o build/test_av
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -pthread -Isource source/audio_stream.c source/av_avi.c source/mjpeg.c source/av_recorder.c source/storage.c tests/test_av.c -lm -o build/test_av
 	./build/test_av
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/clip.c source/av_avi.c source/avi.c tests/test_clip.c -o build/test_clip
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/clip.c source/av_avi.c source/mjpeg.c source/avi.c tests/test_clip.c -o build/test_clip
 	./build/test_clip
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c source/microphone.c tests/test_microphone.c -o build/test_microphone
 	./build/test_microphone
@@ -60,7 +60,7 @@ test: build/ui_assets.h | build
 	./build/test_uvc_generic
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/uvc.c source/uac.c source/camera.c tests/test_camera.c -o build/test_camera
 	./build/test_camera
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/avi.c tests/test_avi.c -o build/test_avi
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/avi.c source/mjpeg.c tests/test_avi.c -o build/test_avi
 	./build/test_avi
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isource source/storage.c tests/test_storage.c -o build/test_storage
 	./build/test_storage
@@ -81,12 +81,12 @@ test: build/ui_assets.h | build
 
 .PHONY: test-photo test-recording test-framing
 test-recording: | build
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Isource source/photo.c source/avi.c source/storage.c source/recorder.c tests/test_recorder.c $(JPEG_LIBS) -o build/test_recorder
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Isource source/photo.c source/avi.c source/mjpeg.c source/storage.c source/recorder.c tests/test_recorder.c $(JPEG_LIBS) -o build/test_recorder
 	./build/test_recorder
 	python3 tools/check_recordings.py
 
 test-framing: | build
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Isource source/uvc.c source/preview.c source/photo.c source/avi.c source/storage.c source/recorder.c tests/test_frame_pipeline.c $(JPEG_LIBS) -o build/test_frame_pipeline
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Isource source/uvc.c source/preview.c source/photo.c source/avi.c source/mjpeg.c source/storage.c source/recorder.c tests/test_frame_pipeline.c $(JPEG_LIBS) -o build/test_frame_pipeline
 	./build/test_frame_pipeline
 
 test-photo: | build
@@ -117,11 +117,14 @@ test-export: test-recording
 
 .PHONY: test-modes
 test-modes: build/ui_assets.h | build
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Ibuild -Isource source/uvc.c source/photo.c source/avi.c source/screen.c tests/test_video_modes.c $(JPEG_LIBS) -o build/test_video_modes
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Ibuild -Isource source/uvc.c source/photo.c source/avi.c source/mjpeg.c source/screen.c tests/test_video_modes.c $(JPEG_LIBS) -o build/test_video_modes
 	./build/test_video_modes
 
 .PHONY: test-av-media
 test-av-media: | build
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Isource source/photo.c source/av_avi.c tests/test_av_media.c $(JPEG_LIBS) -o build/test_av_media
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Isource source/photo.c source/av_avi.c source/mjpeg.c tests/test_av_media.c $(JPEG_LIBS) -o build/test_av_media
 	./build/test_av_media
 	python3 tools/check_av.py
+
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(JPEG_CFLAGS) -Isource source/avi.c source/av_avi.c source/mjpeg.c tests/test_mjpeg.c $(JPEG_LIBS) -o build/test_mjpeg
+	./build/test_mjpeg

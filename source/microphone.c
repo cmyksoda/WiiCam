@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "microphone.h"
+#include <stdio.h>
 #include <string.h>
 
 bool microphone_match(const MicEntry *entries, size_t count, int32_t video_id,
@@ -49,6 +50,13 @@ bool microphone_parameters(const CameraEntry *entry, const uint8_t *p, unsigned 
            && p[59] == 0;
 }
 
+static uint32_t usable_rate(const UacMode *mode)
+{
+    for (uint32_t factor = 1; factor <= MIC_MAX_DECIMATION; ++factor)
+        if (uac_rate_supported(mode, MIC_RATE * factor)) return MIC_RATE * factor;
+    return 0;
+}
+
 bool microphone_mode(const uint8_t *config, size_t length, UacMode *mode)
 {
     if (!mode) return false;
@@ -56,35 +64,74 @@ bool microphone_mode(const uint8_t *config, size_t length, UacMode *mode)
     if (!config || length < 9 || length > CAMERA_CONFIG_CAPACITY || config[0] != 9 || config[1] != 2
         || uvc_le16(config + 2) != length)
         return false;
-    unsigned found = 0;
     UacMode selected = {0};
+    uint32_t cost = 0;
     for (size_t at = 9; at < length; at += config[at]) {
         if (length - at < 2 || config[at] < 2 || config[at] > length - at) return false;
         const uint8_t *d = config + at;
         if (d[1] == 4 && d[0] >= 9 && d[3] && d[5] == 1 && d[6] == 2) {
             UacMode candidate;
-            if (uac_parse(config, length, d[2], d[3], &candidate) == UAC_OK
-                && candidate.channels == 1 && uac_rate_supported(&candidate, MIC_RATE)) {
-                selected = candidate;
-                selected.rate = MIC_RATE;
-                ++found;
-            }
+            if (uac_parse(config, length, d[2], d[3], &candidate) != UAC_OK
+                || candidate.channels > MIC_MAX_CHANNELS)
+                continue;
+            uint32_t rate = usable_rate(&candidate);
+            if (!rate || (cost && rate * candidate.channels >= cost)) continue;
+            selected = candidate;
+            selected.rate = rate;
+            cost = rate * candidate.channels;
         }
     }
-    if (found != 1) return false;
+    if (!cost) return false;
     *mode = selected;
     return true;
+}
+
+size_t microphone_summary(const uint8_t *config, size_t length, char *text, size_t size)
+{
+    if (!config || !text || !size || length < 9) return 0;
+    size_t used = 0;
+    unsigned interface = 0, alternate = 0;
+    bool streaming = false;
+    text[0] = 0;
+    for (size_t at = 9; at + 2 <= length && config[at] >= 2 && config[at] <= length - at;
+         at += config[at]) {
+        const uint8_t *d = config + at;
+        if (d[1] == 4 && d[0] >= 9) {
+            streaming = d[5] == 1 && d[6] == 2 && d[3];
+            interface = d[2];
+            alternate = d[3];
+        } else if (streaming && d[1] == 0x24 && d[0] >= 8 && d[2] == 2) {
+            int n = snprintf(text + used, size - used,
+                             "Audio interface %u alternate %u: format %u, %u ch, %u-bit,", interface,
+                             alternate, d[3], d[4], d[6]);
+            if (n < 0 || (size_t)n >= size - used) break;
+            used += (size_t)n;
+            unsigned count = d[7];
+            for (unsigned r = 0; (count ? r < count : r < 2) && 11u + 3 * r <= d[0]; ++r) {
+                unsigned rate = d[8 + 3 * r] | d[9 + 3 * r] << 8 | (unsigned)d[10 + 3 * r] << 16;
+                n = snprintf(text + used, size - used, "%s%u", count || !r ? " " : "-", rate);
+                if (n < 0 || (size_t)n >= size - used) return used;
+                used += (size_t)n;
+            }
+            n = snprintf(text + used, size - used, " Hz\n");
+            if (n < 0 || (size_t)n >= size - used) break;
+            used += (size_t)n;
+        }
+    }
+    return used;
 }
 
 MicRateResult microphone_set_rate(const CameraEntry *entry, const UacMode *mode, MicControl control,
                                   void *context, uint8_t *data)
 {
-    if (!mode || mode->channels != 1 || !uac_rate_supported(mode, MIC_RATE)) return MIC_RATE_FAILED;
+    if (!mode || !mode->channels || mode->channels > MIC_MAX_CHANNELS || mode->rate % MIC_RATE
+        || mode->rate > MIC_RATE * MIC_MAX_DECIMATION || !uac_rate_supported(mode, mode->rate))
+        return MIC_RATE_FAILED;
     if (!mode->frequency_control) return MIC_RATE_OK;
     if (!control || !data || !(mode->endpoint & 0x80)) return MIC_RATE_FAILED;
-    data[0] = MIC_RATE & 255;
-    data[1] = MIC_RATE >> 8;
-    data[2] = 0;
+    data[0] = mode->rate & 255;
+    data[1] = mode->rate >> 8 & 255;
+    data[2] = mode->rate >> 16 & 255;
     if (control(context, 0x22, 1, 0x0100, mode->endpoint, data, 3) != 3) return MIC_RATE_FAILED;
     /* This exact camera profile repeatedly rejects rate readback. Avoid issuing
      * the failing GET before streaming; successful SET alone is not proof
@@ -98,5 +145,5 @@ MicRateResult microphone_set_rate(const CameraEntry *entry, const UacMode *mode,
     int result = control(context, 0xa2, 0x81, 0x0100, mode->endpoint, data, 3);
     if (result != 3) return MIC_RATE_FAILED;
     uint32_t rate = (uint32_t)data[0] | (uint32_t)data[1] << 8 | (uint32_t)data[2] << 16;
-    return rate == MIC_RATE ? MIC_RATE_OK : MIC_RATE_FAILED;
+    return rate == mode->rate ? MIC_RATE_OK : MIC_RATE_FAILED;
 }

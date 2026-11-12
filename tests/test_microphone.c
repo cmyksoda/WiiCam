@@ -2,6 +2,7 @@
 #include "microphone.h"
 #include "uvc_fixture.h"
 #include <stdio.h>
+#include <string.h>
 
 /* Logged UAC descriptors in a synthetic configuration envelope. */
 static Fixture microphone(void)
@@ -48,8 +49,110 @@ static int control(void *context, uint8_t type, uint8_t request, uint16_t value,
     return 3;
 }
 
+
+typedef struct {
+    unsigned channels, rate_count;
+    uint32_t rates[4];
+    unsigned capacity;
+} Alt;
+
+/* A one-terminal microphone whose streaming interface offers the given alternates. */
+static Fixture built(unsigned channels, const Alt *alts, unsigned count)
+{
+    Fixture f = {0};
+    const uint8_t feature_length = (uint8_t)(7 + 2 * (channels + 1));
+    const uint8_t header[] = {9, 2, 0, 0, 2, 1, 0, 0x80, 100, 9, 4, 2, 0, 0, 1, 1, 0, 0};
+    append(&f, header, sizeof(header));
+    const uint8_t ac[] = {9, 0x24, 1, 0, 1, (uint8_t)(30 + feature_length), 0, 1, 3,
+                          12, 0x24, 2, 1, 1, 2, 0, (uint8_t)channels, channels == 2 ? 3 : 0, 0, 0, 0};
+    append(&f, ac, sizeof(ac));
+    uint8_t feature[16] = {feature_length, 0x24, 6, 2, 1, 2, 1, 0};
+    for (unsigned c = 1; c <= channels; ++c) feature[6 + 2 * c] = 2;
+    append(&f, feature, feature_length);
+    const uint8_t output[] = {9, 0x24, 3, 3, 1, 1, 0, 2, 0, 9, 4, 3, 0, 0, 1, 2, 0, 0};
+    append(&f, output, sizeof(output));
+    for (unsigned a = 0; a < count; ++a) {
+        const uint8_t head[] = {9, 4, 3, (uint8_t)(a + 1), 1, 1, 2, 0, 0, 7, 0x24, 1, 3, 1, 1, 0};
+        append(&f, head, sizeof(head));
+        uint8_t format[20] = {(uint8_t)(8 + 3 * alts[a].rate_count), 0x24, 2, 1,
+                              (uint8_t)alts[a].channels, 2, 16, (uint8_t)alts[a].rate_count};
+        for (unsigned r = 0; r < alts[a].rate_count; ++r) {
+            format[8 + 3 * r] = alts[a].rates[r] & 255;
+            format[9 + 3 * r] = alts[a].rates[r] >> 8 & 255;
+            format[10 + 3 * r] = alts[a].rates[r] >> 16 & 255;
+        }
+        append(&f, format, format[0]);
+        const uint8_t endpoint[] = {9, 5, 0x84, 5, (uint8_t)(alts[a].capacity & 255),
+                                    (uint8_t)(alts[a].capacity >> 8), 4, 0, 0, 7, 0x25, 1, 1, 0, 0, 0};
+        append(&f, endpoint, sizeof(endpoint));
+    }
+    f.data[2] = f.length & 255;
+    f.data[3] = (uint8_t)(f.length >> 8);
+    return f;
+}
+
+/* A clock that reads back whatever rate was last set. */
+static int echo(void *context, uint8_t type, uint8_t request, uint16_t value, uint16_t index,
+                uint8_t *data, unsigned length)
+{
+    uint32_t *clock = context;
+    assert(value == 0x100 && index == 0x84 && length == 3);
+    if (type == 0x22 && request == 1)
+        *clock = (uint32_t)data[0] | (uint32_t)data[1] << 8 | (uint32_t)data[2] << 16;
+    else {
+        assert(type == 0xa2 && request == 0x81);
+        data[0] = *clock & 255;
+        data[1] = *clock >> 8 & 255;
+        data[2] = *clock >> 16 & 255;
+    }
+    return 3;
+}
+
+static void format_tests(void)
+{
+    UacMode mode;
+    const Alt stereo48 = {2, 1, {48000}, 196};
+    Fixture f = built(2, &stereo48, 1);
+    assert(microphone_mode(f.data, f.length, &mode));
+    assert(mode.channels == 2 && mode.rate == 48000 && mode.alternate == 1);
+
+    const Alt choices[] = {{2, 1, {48000}, 196}, {2, 2, {32000, 16000}, 68}, {2, 1, {32000}, 132}};
+    f = built(2, choices, 3);
+    assert(microphone_mode(f.data, f.length, &mode));
+    assert(mode.alternate == 2 && mode.rate == 16000 && mode.channels == 2);
+
+    const Alt only44 = {2, 1, {44100}, 180};
+    f = built(2, &only44, 1);
+    assert(!microphone_mode(f.data, f.length, &mode));
+    char text[256];
+    size_t used = microphone_summary(f.data, f.length, text, sizeof(text));
+    assert(used == strlen(text));
+    assert(!strcmp(text, "Audio interface 3 alternate 1: format 1, 2 ch, 16-bit, 44100 Hz\n"));
+    assert(microphone_summary(f.data, f.length, text, 20) < 20);
+
+    const Alt pair[] = {{1, 1, {16000}, 32}, {1, 1, {16000}, 32}};
+    f = built(1, pair, 2);
+    assert(microphone_mode(f.data, f.length, &mode) && mode.alternate == 1);
+
+    const Alt mono32 = {1, 1, {32000}, 64};
+    f = built(1, &mono32, 1);
+    assert(microphone_mode(f.data, f.length, &mode) && mode.rate == 32000);
+    CameraEntry entry = {.vid = 0x07ca, .pid = 0x313a, .interface = 3};
+    uint8_t data[3];
+    uint32_t clock = 0;
+    assert(mode.frequency_control
+           && microphone_set_rate(&entry, &mode, echo, &clock, data) == MIC_RATE_OK);
+    assert(clock == 32000);
+    mode.channels = 3;
+    assert(microphone_set_rate(&entry, &mode, NULL, NULL, NULL) == MIC_RATE_FAILED);
+    mode.channels = 1;
+    mode.rate = 44100;
+    assert(microphone_set_rate(&entry, &mode, NULL, NULL, NULL) == MIC_RATE_FAILED);
+}
+
 int main(void)
 {
+    format_tests();
     Fixture f = microphone();
     UacMode mode;
     assert(microphone_mode(f.data, f.length, &mode));
@@ -98,7 +201,7 @@ int main(void)
     mode.rates[0] = MIC_RATE;
     assert(microphone_set_rate(&entry, &mode, NULL, NULL, NULL));
     mode.channels = 2;
-    assert(!microphone_set_rate(&entry, &mode, NULL, NULL, NULL));
+    assert(microphone_set_rate(&entry, &mode, NULL, NULL, NULL));
 
     MicEntry entries[3] = {{{(int32_t)0xe71e0042u, 0x0c45, 0x6366, 1}, 0x00420107},
                            {{(int32_t)0xe71c0042u, 0x0c45, 0x6366, 3}, 0x00420302},
@@ -145,5 +248,5 @@ int main(void)
         parameters[faults[n]] ^= 1;
     }
     puts(
-        "PASS: physical UAC fields, ambiguous/changed IOS pairing, strict rate controls, exact-profile readback skip and strict readback for other devices");
+        "PASS: stereo and 32/48 kHz selection, cheapest alternate, refusal summary, physical UAC fields, ambiguous/changed IOS pairing, strict rate controls, exact-profile readback skip and strict readback for other devices");
 }

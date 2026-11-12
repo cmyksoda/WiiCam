@@ -240,7 +240,8 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
     audio_stream_init(&av_audio.stream, MIC_RATE_UNREADABLE);
     av_audio.opened = av_audio.running = true;
     av_audio.handle = 43;
-    av_audio.mode = (UacMode){.interface = 3, .endpoint = 0x84, .packet_capacity = 192};
+    av_audio.mode = (UacMode){
+        .interface = 3, .endpoint = 0x84, .packet_capacity = 192, .channels = 1, .rate = MIC_RATE};
     av_audio.start = clock_ms;
     if (scenario == EARLY_EXIT) exit_requested = true;
     return true;

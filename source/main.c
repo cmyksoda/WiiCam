@@ -824,7 +824,13 @@ static bool mic_open(s32 video_handle, const UvcMode *video_mode, Microphone *mi
     unsigned length = uvc_le16(config + 2);
     if (length < 9 || length > sizeof(reference)
         || !microphone_mode(config, length, &microphone->mode)) {
-        report("No usable microphone: sound needs one UAC1 mono PCM16 16000 Hz mode.\n");
+        char summary[512];
+        if (length < 9 || length > sizeof(reference)
+            || !microphone_summary(config, length, summary, sizeof(summary)))
+            summary[0] = 0;
+        report("No usable microphone: sound needs a UAC1 PCM16 mono or stereo mode at 16, 32 or "
+               "48 kHz.\n%s",
+               summary);
         return false;
     }
     memcpy(reference, config, length);
@@ -960,6 +966,8 @@ static bool av_audio_queue_start(MicRateResult rate)
     atomic_init(&av_audio.stop, false);
     atomic_init(&av_audio.last_ms, 0);
     audio_stream_init(&av_audio.stream, rate);
+    if (!audio_stream_set_format(&av_audio.stream, mode.channels, mode.rate / MIC_RATE))
+        return false;
     iso_queue_init(&av_audio.queue, audio_iso_data, audio_iso_sizes, mode.packet_capacity);
     av_audio.start = gettime();
     if (LWP_CreateThread(&av_audio.thread, av_audio_worker, &av_audio, audio_stack,
@@ -996,6 +1004,10 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
     }
     uint64_t configured = gettime();
     audio_stream_init(&av_audio.stream, rate);
+    if (rate != MIC_RATE_FAILED
+        && !audio_stream_set_format(&av_audio.stream, microphone.mode.channels,
+                                    microphone.mode.rate / MIC_RATE))
+        rate = MIC_RATE_FAILED;
     if (rate == MIC_RATE_FAILED || exit_requested
         || (!reused && rate == MIC_RATE_UNREADABLE && !av_audio_wait_rate(configured))) {
         if (rate == MIC_RATE_FAILED) report("Microphone alternate or rate setup failed.\n");
@@ -1007,8 +1019,10 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
         return false;
     }
     if (!reused)
-        report("Microphone interface %u alternate %u endpoint %02x: 16 kHz, rate readback %s.\n",
+        report("Microphone interface %u alternate %u endpoint %02x: %u Hz, %u ch, rate readback "
+               "%s.\n",
                microphone.mode.interface, microphone.mode.alternate, microphone.mode.endpoint,
+               (unsigned)microphone.mode.rate, microphone.mode.channels,
                rate == MIC_RATE_OK ? "confirmed" : "skipped for this camera");
     return true;
 }

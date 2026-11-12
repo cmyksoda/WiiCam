@@ -282,7 +282,8 @@ int main(void)
     descriptor = microphone();
     const UvcMode video = {.interface = 1, .width = 320, .height = 240};
     const UacMode selected = {.control_interface = 2, .interface = 3, .alternate = 1,
-                              .endpoint = 0x84, .packet_capacity = 192, .interval = 4};
+                              .endpoint = 0x84, .packet_capacity = 192, .interval = 4,
+                              .channels = 1, .rate = MIC_RATE};
     for (scenario = 0; scenario < SCENARIOS; ++scenario) {
         clock_ms = queue_ms = 0;
         thread_context = NULL;

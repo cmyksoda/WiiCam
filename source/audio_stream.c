@@ -18,6 +18,35 @@ void audio_stream_init(AudioStream *s, MicRateResult rate)
     atomic_init(&s->received, 0);
     atomic_init(&s->failed, rate == MIC_RATE_FAILED);
     s->rate = rate;
+    s->channels = s->factor = 1;
+}
+
+bool audio_stream_set_format(AudioStream *s, unsigned channels, unsigned factor)
+{
+    if (!channels || channels > MIC_MAX_CHANNELS || !factor || factor > MIC_MAX_DECIMATION
+        || s->packets || s->phase) {
+        atomic_store(&s->failed, true);
+        return false;
+    }
+    s->channels = channels;
+    s->factor = factor;
+    return true;
+}
+
+/* Returns the MIC_RATE mono bytes made from one packet; a partial run carries over. */
+static unsigned convert(AudioStream *s, const uint8_t *data, unsigned length, uint8_t *out)
+{
+    unsigned produced = 0, run = s->channels * s->factor;
+    for (unsigned n = 0; n < length; n += 2) {
+        s->sum += (int16_t)((unsigned)data[n] | ((unsigned)data[n + 1] << 8));
+        if (++s->phase < run) continue;
+        int32_t sample = s->sum / (int32_t)run;
+        out[produced++] = (uint8_t)(sample & 255);
+        out[produced++] = (uint8_t)((sample >> 8) & 255);
+        s->sum = 0;
+        s->phase = 0;
+    }
+    return produced;
 }
 
 bool audio_stream_packet(AudioStream *s, const uint8_t *data, unsigned length, unsigned capacity,
@@ -26,7 +55,7 @@ bool audio_stream_packet(AudioStream *s, const uint8_t *data, unsigned length, u
     if (atomic_load(&s->failed)) return false;
     if (!capacity || capacity > 1024 || (!data && length)) goto fail;
     bool conceal = false;
-    if (length > capacity || (length & 1)) {
+    if (length > capacity || length % (2u * s->channels)) {
         ++s->rejected;
         /* IOS58's high-speed ISO completion preserves iTD status in bits 15:12.
          * 0x1000 is a transaction error with no payload. Only the known camera's
@@ -45,6 +74,12 @@ bool audio_stream_packet(AudioStream *s, const uint8_t *data, unsigned length, u
     if (!length) {
         ++s->empty;
         return true;
+    }
+    uint8_t mixed[1024];
+    if (!conceal && (s->channels > 1 || s->factor > 1)) {
+        length = convert(s, data, length, mixed);
+        data = mixed;
+        if (!length) return true;
     }
     unsigned write = atomic_load_explicit(&s->produced, memory_order_relaxed);
     unsigned read = atomic_load_explicit(&s->consumed, memory_order_acquire);
