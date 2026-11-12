@@ -108,6 +108,45 @@ static int echo(void *context, uint8_t type, uint8_t request, uint16_t value, ui
     return 3;
 }
 
+/* The AVerMedia Live Streamer Cam 313's audio function (issue #4), transcribed from its
+ * descriptor report. Its feature unit lists only the master control, one byte short of UAC1. */
+static Fixture avermedia(void)
+{
+    Fixture f = {0};
+    const uint8_t function[] = {
+        9,    2,    0,    0,    2,    1,    0,    0x80, 0xfa, 8,    0x0b, 2,    2,    1,
+        2,    0,    5,    9,    4,    2,    0,    0,    1,    1,    0,    5,    9,    0x24,
+        1,    0,    1,    38,   0,    1,    3,    12,   0x24, 2,    1,    1,    2,    0,
+        1,    3,    0,    0,    0,    9,    0x24, 3,    3,    1,    1,    0,    5,    0,
+        8,    0x24, 6,    5,    1,    1,    3,    0,    9,    4,    3,    0,    0,    1,
+        2,    0,    0};
+    append(&f, function, sizeof(function));
+    const struct {
+        uint32_t rate;
+        uint8_t packet;
+    } alts[] = {{8000, 0x14}, {16000, 0x24}, {44100, 0x5c}, {48000, 0x64}};
+    for (unsigned n = 0; n < 4; ++n) {
+        const uint32_t r = alts[n].rate;
+        const uint8_t alt[] = {
+            9,    4, 3, (uint8_t)(n + 1), 1,    1, 2,  0, 0, 7,    0x24, 1,
+            3,    1, 1, 0,                11,   0x24, 2, 1, 1, 2, 16, 1,
+            r & 255, r >> 8 & 255, r >> 16 & 255, 9, 5, 0x86, 5, alts[n].packet, 0, 4, 0, 0,
+            7,    0x25, 1, 1, 0, 0, 0};
+        append(&f, alt, sizeof(alt));
+    }
+    return f;
+}
+
+static void avermedia_test(void)
+{
+    Fixture f = avermedia();
+    UacMode mode;
+    assert(microphone_mode(f.data, f.length, &mode));
+    assert(mode.control_interface == 2 && mode.interface == 3 && mode.alternate == 2);
+    assert(mode.channels == 1 && mode.rate == 16000 && mode.frequency_control);
+    assert(mode.endpoint == 0x86 && mode.packet_capacity == 36 && mode.interval == 4);
+}
+
 static void format_tests(void)
 {
     UacMode mode;
@@ -152,6 +191,7 @@ static void format_tests(void)
 
 int main(void)
 {
+    avermedia_test();
     format_tests();
     Fixture f = microphone();
     UacMode mode;

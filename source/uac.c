@@ -120,7 +120,9 @@ static bool microphone(const Entity *list, unsigned count, UacMode *mode)
             mode->microphone = current->id;
             return true;
         }
-        if (current->kind != 6 || current->controls != mode->channels + 1u) return false;
+        // Some cameras (the AVerMedia Cam 313) list only the master control.
+        if (current->kind != 6 || (current->controls != mode->channels + 1u && current->controls != 1))
+            return false;
         id = current->source;
     }
     return false;
