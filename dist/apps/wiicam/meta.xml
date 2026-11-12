@@ -4,15 +4,15 @@
   <coder>cmyksoda</coder>
   <version>test-4</version>
   <release_date>20261112</release_date>
-  <short_description>Test build for WiiCam issues #1, #3 and #4</short_description>
+  <short_description>Test build for WiiCam issues #1 and #4</short_description>
   <long_description>A test build for WiiCam. It installs as its own app and doesn't replace WiiCam.
 
-Issue #1: cameras with more than 2,048 bytes of USB descriptors, like the Logitech C920, can now be listed. Plug the camera in and start this app as usual. If it ever says "Camera not found - replug it", unplug the camera, plug it back in and press A.
+Issue #1: cameras with more than 2,048 bytes of USB descriptors, like the Logitech C920, can be listed. If it ever says "Camera not found - replug it", unplug the camera, plug it back in and press A. Test 4 keeps more of the C920's frames, accepts its stereo microphone, and logs why frames are dropped. Down on the menu switches to the largest USB packets, for testing.
 
-Issues #2 and #3: the Photo Channel refused videos from cameras that leave the Huffman tables out of their frames, or that pad the end of each frame with zero bytes, like the WC04. Videos now carry the tables and end each frame exactly, so the Photo Channel can play them.
+Issues #2 and #3: videos carry their Huffman tables and end each frame exactly, so the Photo Channel can play them.
 
-Issue #4: microphones that only record in stereo, or at 32 or 48 kHz, can now record sound. The C920's microphone is one of them. Microphones that list only a master volume control, like the AVerMedia Cam 313's, are accepted too.
+Issue #4: test 4 carries on when a microphone doesn't report its sample rate, and logs each step of the microphone setup.
 
-Please share SD:/wc04-camera/session.log on the issue, and any video that doesn't play. Everything else works like WiiCam 1.0.0-beta.</long_description>
+Please share SD:/wc04-camera/session.log on the issue.</long_description>
   <ahb_access/>
 </app>
