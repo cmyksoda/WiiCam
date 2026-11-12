@@ -92,19 +92,18 @@ bool avi_append(Avi *a, const uint8_t *jpeg, size_t length)
     if (!avi_has_space(a, length) || !jpeg || length < 4 || jpeg[0] != 0xff || jpeg[1] != 0xd8
         || jpeg[length - 2] != 0xff || jpeg[length - 1] != 0xd9)
         return false;
-    size_t insert = mjpeg_dht_insert_at(jpeg, length);
-    size_t stored = length + (insert ? MJPEG_DHT_BYTES : 0);
+    MjpegPart parts[MJPEG_PARTS];
+    size_t count = mjpeg_frame_parts(jpeg, length, parts), stored = 0;
+    for (size_t i = 0; i < count; ++i)
+        stored += parts[i].length;
     uint8_t chunk[8];
     memcpy(chunk, "00dc", 4);
     le32(chunk + 4, (uint32_t)stored);
     const uint8_t pad = 0;
-    if (!write_bytes(a, chunk, 8)
-        || (insert
-                ? !write_bytes(a, jpeg, insert) || !write_bytes(a, mjpeg_dht, MJPEG_DHT_BYTES)
-                      || !write_bytes(a, jpeg + insert, length - insert)
-                : !write_bytes(a, jpeg, length))
-        || ((stored & 1) && !write_bytes(a, &pad, 1)))
-        return false;
+    if (!write_bytes(a, chunk, 8)) return false;
+    for (size_t i = 0; i < count; ++i)
+        if (!write_bytes(a, parts[i].data, parts[i].length)) return false;
+    if ((stored & 1) && !write_bytes(a, &pad, 1)) return false;
     a->offsets[a->frames] = 4 + a->bytes;
     a->lengths[a->frames] = (uint32_t)stored;
     ++a->frames;
