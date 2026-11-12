@@ -1,21 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <app version="1">
-  <name>WiiCam</name>
+  <name>WiiCam test</name>
   <coder>cmyksoda</coder>
-  <version>1.0.0-beta</version>
-  <release_date>20261021</release_date>
-  <short_description>USB Camera Application</short_description>
-  <long_description>Take photos and record video with a USB camera. It can record sound, too.
+  <version>test-2</version>
+  <release_date>20261112</release_date>
+  <short_description>Test build for WiiCam issues #1, #3 and #4</short_description>
+  <long_description>A test build for WiiCam. It installs as its own app and doesn't replace WiiCam.
 
-In testing, sound works at every resolution. However, it only stays available at the size the camera first opened with. To record sound at another size, restart WiiCam; the menu tells you when.
+Issue #1: cameras with more than 2,048 bytes of USB descriptors, like the Logitech C920, can now be listed. With such a camera, start this app, then unplug the camera and plug it back in, then press A.
 
-After a photo, or a video stopped with A, a review page opens: 1 plays the video back, and Minus twice deletes it.
+Issues #2 and #3: videos from cameras that leave the Huffman tables out of their frames now carry them, so the Photo Channel can play the videos.
 
-Choose a size from 160 x 120 up to 848 x 480 (depending on the camera), set a 3, 5 or 10 second photo timer, or refresh the camera source from the menu.
+Issue #4: microphones that only record in stereo, or at 32 or 48 kHz, can now record sound. The C920's microphone is one of them.
 
-Photos are saved to SD:/DCIM/100WC04 and videos to SD:/wc04-camera/videos. Videos are AVI files limited to 60 seconds or 128 MiB. Photos and videos can be viewed and edited in the Photo Channel.
-
-Requires IOS58 and an SD card to save.
-
-Tested with the Ubisoft / Hercules WC04 camera (photos and silent video) and a W2 webcam, USB ID 0c45:6366 (photos, video and sound at every size). Other UVC 1.0 MJPEG cameras may work.</long_description>
+Please share SD:/wc04-camera/session.log on the issue, and any video that doesn't play. Everything else works like WiiCam 1.0.0-beta.</long_description>
+  <ahb_access/>
 </app>

@@ -31,6 +31,7 @@
 #include "microphone.h"
 #include "av_recorder.h"
 #include "clip.h"
+#include "ios_patch.h"
 
 #define FRAME_TIMEOUT_SECONDS 10
 #define AV_RATE_SETTLE_MS 50
@@ -1367,12 +1368,24 @@ int main(void)
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
 
-    report("\nWiiCam C920 test 1 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam test 2 - IOS %u\n", IOS_GetVersion());
     bool usb_ready = false;
-    if (IOS_GetVersion() == 58)
+    bool patched = false;
+    if (IOS_GetVersion() == 58) {
         usb_ready = buffers_ready && USB_Initialize() >= 0;
-    else
+        // After USB_Initialize so IOS has the USB core module loaded in MEM2.
+        char patch_detail[80];
+        IosPatchResult patch = ios_patch_config_limit(patch_detail, sizeof(patch_detail));
+        patched = patch == IOS_PATCH_APPLIED;
+        report("C920 limit patch: %s (%s)\n",
+               patched                            ? "applied"
+               : patch == IOS_PATCH_NO_AHBPROT    ? "skipped, no access"
+               : patch == IOS_PATCH_BUF_NOT_EMPTY ? "skipped, no buffer"
+                                                  : "skipped, wrong IOS build",
+               patch_detail);
+    } else {
         report("Launch under IOS58. This app does not install/reload IOS.\n");
+    }
 
     unsigned width = 320, height = 240;
     char status[80];
@@ -1441,7 +1454,10 @@ int main(void)
             idle_page = SCREEN_NO_SIGNAL;
             recorder_init(&recording);
             av_recorder_init(&av_recording, &av_audio.stream, av_jpeg);
-            snprintf(status, sizeof(status), "Camera not found - A retries, B menu");
+            // A camera plugged in before the patch was read under the old limit.
+            snprintf(status, sizeof(status), "%s",
+                     patched ? "Camera not found - replug it, A retries, B menu"
+                             : "Camera not found - A retries, B menu");
             UvcMode mode;
             UvcAlternate alt;
             bool parked = take_parked_camera(width, height, &handle, &mode, &alt);
@@ -1505,6 +1521,7 @@ int main(void)
     }
 
     release_camera();
+    ios_patch_restore();
     if (usb_ready) USB_Deinitialize();
     if (log_file) fclose(log_file);
     if (mounted) fatUnmount("sd:");
