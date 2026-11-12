@@ -1368,7 +1368,7 @@ int main(void)
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
 
-    report("\nWiiCam test 2 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam test 3 - IOS %u\n", IOS_GetVersion());
     bool usb_ready = false;
     bool patched = false;
     if (IOS_GetVersion() == 58) {

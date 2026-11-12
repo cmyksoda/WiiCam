@@ -2,7 +2,7 @@
 <app version="1">
   <name>WiiCam test</name>
   <coder>cmyksoda</coder>
-  <version>test-2</version>
+  <version>test-3</version>
   <release_date>20261112</release_date>
   <short_description>Test build for WiiCam issues #1, #3 and #4</short_description>
   <long_description>A test build for WiiCam. It installs as its own app and doesn't replace WiiCam.
@@ -11,7 +11,7 @@ Issue #1: cameras with more than 2,048 bytes of USB descriptors, like the Logite
 
 Issues #2 and #3: videos from cameras that leave the Huffman tables out of their frames now carry them, so the Photo Channel can play the videos.
 
-Issue #4: microphones that only record in stereo, or at 32 or 48 kHz, can now record sound. The C920's microphone is one of them.
+Issue #4: microphones that only record in stereo, or at 32 or 48 kHz, can now record sound. The C920's microphone is one of them. Microphones that list only a master volume control, like the AVerMedia Cam 313's, are accepted too.
 
 Please share SD:/wc04-camera/session.log on the issue, and any video that doesn't play. Everything else works like WiiCam 1.0.0-beta.</long_description>
   <ahb_access/>
