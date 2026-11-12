@@ -113,16 +113,14 @@ static bool microphone(const Entity *list, unsigned count, UacMode *mode)
     for (unsigned steps = 0; steps < count; ++steps) {
         current = entity(list, count, id);
         if (!current) return false;
+        // Only the stream's own format decides the PCM layout: the C920's terminal says 1 channel
+        // while it streams 2, and the AVerMedia Cam 313's feature unit lists only a master control.
         if (current->kind == 2) {
-            if (current->type < 0x0201 || current->type > 0x0206
-                || current->channels != mode->channels)
-                return false;
+            if (current->type < 0x0201 || current->type > 0x0206 || !current->channels) return false;
             mode->microphone = current->id;
             return true;
         }
-        // Some cameras (the AVerMedia Cam 313) list only the master control.
-        if (current->kind != 6 || (current->controls != mode->channels + 1u && current->controls != 1))
-            return false;
+        if (current->kind != 6) return false;
         id = current->source;
     }
     return false;

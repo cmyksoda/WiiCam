@@ -110,7 +110,7 @@ static int echo(void *context, uint8_t type, uint8_t request, uint16_t value, ui
 
 /* The AVerMedia Live Streamer Cam 313's audio function (issue #4), transcribed from its
  * descriptor report. Its feature unit lists only the master control, one byte short of UAC1. */
-static Fixture avermedia(void)
+static Fixture avermedia_like(unsigned channels, const uint32_t *rates, const uint8_t *packets)
 {
     Fixture f = {0};
     const uint8_t function[] = {
@@ -121,20 +121,34 @@ static Fixture avermedia(void)
         8,    0x24, 6,    5,    1,    1,    3,    0,    9,    4,    3,    0,    0,    1,
         2,    0,    0};
     append(&f, function, sizeof(function));
-    const struct {
-        uint32_t rate;
-        uint8_t packet;
-    } alts[] = {{8000, 0x14}, {16000, 0x24}, {44100, 0x5c}, {48000, 0x64}};
-    for (unsigned n = 0; n < 4; ++n) {
-        const uint32_t r = alts[n].rate;
+    for (unsigned n = 0; rates[n]; ++n) {
+        const uint32_t r = rates[n];
         const uint8_t alt[] = {
             9,    4, 3, (uint8_t)(n + 1), 1,    1, 2,  0, 0, 7,    0x24, 1,
-            3,    1, 1, 0,                11,   0x24, 2, 1, 1, 2, 16, 1,
-            r & 255, r >> 8 & 255, r >> 16 & 255, 9, 5, 0x86, 5, alts[n].packet, 0, 4, 0, 0,
+            3,    1, 1, 0,                11,   0x24, 2, 1, (uint8_t)channels, 2, 16, 1,
+            r & 255, r >> 8 & 255, r >> 16 & 255, 9, 5, 0x86, 5, packets[n], 0, 4, 0, 0,
             7,    0x25, 1, 1, 0, 0, 0};
         append(&f, alt, sizeof(alt));
     }
+    f.data[2] = f.length & 255;
+    f.data[3] = (uint8_t)(f.length >> 8);
     return f;
+}
+
+static Fixture avermedia(void)
+{
+    static const uint32_t rates[] = {8000, 16000, 44100, 48000, 0};
+    static const uint8_t packets[] = {0x14, 0x24, 0x5c, 0x64};
+    return avermedia_like(1, rates, packets);
+}
+
+/* The Logitech C920's audio function has the same layout, but its terminal says 1 channel
+ * while every alternate streams 2 (issue #1, from a published lsusb -v). */
+static Fixture c920(void)
+{
+    static const uint32_t rates[] = {16000, 24000, 32000, 0};
+    static const uint8_t packets[] = {0x44, 0x64, 0x84};
+    return avermedia_like(2, rates, packets);
 }
 
 static void avermedia_test(void)
@@ -145,6 +159,20 @@ static void avermedia_test(void)
     assert(mode.control_interface == 2 && mode.interface == 3 && mode.alternate == 2);
     assert(mode.channels == 1 && mode.rate == 16000 && mode.frequency_control);
     assert(mode.endpoint == 0x86 && mode.packet_capacity == 36 && mode.interval == 4);
+
+    // One listed rate per alternate: a refused or wrong clock request can't change the rate.
+    uint8_t data[3];
+    for (unsigned fault = 0; fault <= 7; ++fault) {
+        Control state = {.fault = fault, .endpoint = 0x86};
+        CameraEntry entry = {.vid = 0x07ca, .pid = 0x313a, .interface = 3};
+        MicRateResult rate = microphone_set_rate(&entry, &mode, control, &state, data);
+        assert(rate == (fault == 0 ? MIC_RATE_OK : MIC_RATE_UNREADABLE));
+    }
+
+    f = c920();
+    assert(microphone_mode(f.data, f.length, &mode));
+    assert(mode.interface == 3 && mode.alternate == 1 && mode.channels == 2);
+    assert(mode.rate == 16000 && mode.packet_capacity == 68 && mode.endpoint == 0x86);
 }
 
 static void format_tests(void)
@@ -214,8 +242,10 @@ int main(void)
         CameraEntry other = entry;
         other.pid ^= 1;
         state = (Control){.fault = fault};
+        // A missing read is forgiven, but a different rate on a multi-rate alternate is not.
+        bool unread = fault == 3 || fault == 4 || fault == 6;
         assert(microphone_set_rate(&other, &mode, control, &state, data)
-               == (fault == 0 ? MIC_RATE_OK : MIC_RATE_FAILED));
+               == (fault == 0 ? MIC_RATE_OK : unread ? MIC_RATE_UNREADABLE : MIC_RATE_FAILED));
         assert(state.calls == (set_failed ? 1u : 2u));
     }
     for (unsigned n = 0; n < 10; ++n) {
@@ -232,7 +262,7 @@ int main(void)
         if (n == 8) changed.interval ^= 1;
         Control state = {.fault = 6, .endpoint = changed.endpoint};
         assert(microphone_set_rate(n == 9 ? NULL : &other, &changed, control, &state, data)
-               == MIC_RATE_FAILED);
+               == MIC_RATE_UNREADABLE);
         assert(state.calls == 2);
     }
     mode.frequency_control = false;

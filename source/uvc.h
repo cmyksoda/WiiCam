@@ -46,11 +46,22 @@ typedef struct {
     uint32_t limit_value, limit_bound;
 } UvcMode;
 
+#define UVC_DROP_SAMPLES 3
+
+/* reason: 'F' FID changed before EOF, 'J' no JPEG start or end, 'D' discarded by a bad packet. */
+typedef struct {
+    uint32_t size;
+    char reason;
+    uint8_t head[2], tail[8];
+} UvcDropSample;
+
 typedef struct {
     unsigned packets, bytes, empty, header_only, payload_packets, payload_bytes;
     unsigned bad_headers, errors, eof, fid_changes, overflow;
-    unsigned missing_eof, empty_frames, invalid_jpeg, complete;
+    unsigned missing_eof, empty_frames, invalid_jpeg, complete, fid_ends;
     unsigned normalized_frames, padding_bytes;
+    unsigned samples;
+    UvcDropSample sample[UVC_DROP_SAMPLES];
 } UvcStats;
 
 typedef struct {
@@ -83,10 +94,13 @@ const char *uvc_parse_description(UvcParseResult result);
 int uvc_control_payload_length(int result, unsigned requested);
 bool uvc_interval_supported(const UvcMode *mode, uint32_t interval);
 bool uvc_alternate(const UvcMode *mode, uint32_t payload, UvcAlternate *alt);
+void uvc_alternate_largest(const UvcMode *mode, UvcAlternate *alt);
 void uvc_probe_select(uint8_t data[UVC_PROBE_LENGTH], const UvcMode *mode);
 bool uvc_negotiate(const UvcMode *mode, UvcAlternate *alt, uint8_t data[UVC_PROBE_LENGTH],
                    UvcControlTransfer transfer, void *context);
 void uvc_frame_init(UvcFrame *frame, uint8_t *data, size_t capacity);
 bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length);
+/* True when this packet's FID change ends a valid frame that had no EOF; call before uvc_packet. */
+bool uvc_fid_ends_frame(UvcFrame *frame, const uint8_t *packet, size_t length);
 
 #endif

@@ -80,7 +80,7 @@ static bool exit_requested, silent, settling_test, drain_test;
 static unsigned drain_complete_at, cancel_calls;
 static char events[32];
 static unsigned event_count;
-static bool idle_unit_test, cleanup_test;
+static bool idle_unit_test, cleanup_test, largest_packets;
 static unsigned cleanup_calls;
 static unsigned idle_sets, probe_calls;
 static int idle_set_result;

@@ -48,7 +48,7 @@ static void test_boundaries(void)
             input[jpeg_size - 2] = 0xff;
             input[jpeg_size - 1] = 0xd9;
             memset(input + jpeg_size, 0, padding);
-            bool expected = !padding || (padding <= 7 && !((jpeg_size + padding) & 7));
+            bool expected = true;
             assert(feed(input, jpeg_size + padding, 1, 2) == expected);
             if (expected) {
                 assert(frame.size == jpeg_size && frame.stats.complete == 1);
@@ -63,9 +63,10 @@ static void test_boundaries(void)
                 assert(frame.stats.invalid_jpeg == 1);
                 assert(!frame.stats.normalized_frames && !frame.stats.padding_bytes);
             }
+            // Any tail after the EOI is cut off, not only zero padding.
             for (unsigned n = 0; n < padding; ++n) {
                 input[jpeg_size + n] = 0xa5;
-                assert(!feed(input, jpeg_size + padding, 3, 2));
+                assert(feed(input, jpeg_size + padding, 3, 2) && frame.size == jpeg_size);
                 input[jpeg_size + n] = 0;
             }
         }
@@ -101,9 +102,10 @@ static void test_boundaries(void)
     assert(!uvc_packet(&frame, bad_header, sizeof(bad_header)));
     assert(!uvc_packet(&frame, padded, sizeof(padded)));
     assert(frame.stats.bad_headers == 1 && !frame.stats.normalized_frames);
-    /* Internal marker, truncated EOI, and all-zero payloads still fail. */
+    /* An early EOI ends the frame there and decoding judges it; a truncated EOI and all-zero
+     * payloads still fail. */
     uint8_t internal[] = {0xff, 0xd8, 0xff, 0xd9, 0x11, 0, 0, 0};
-    assert(!feed(internal, sizeof(internal), 1, 2));
+    assert(feed(internal, sizeof(internal), 1, 2) && frame.size == 4);
     internal[3] = 0;
     internal[4] = 0;
     assert(!feed(internal, sizeof(internal), 1, 2));
@@ -215,8 +217,9 @@ static void test_pipeline(void)
         /* A raw EOI pair inside a truncated COM segment is not a valid JPEG. */
         const uint8_t false_eoi[] = {0xff, 0xd8, 0xff, 0xfe, 0, 20, 0xff, 0xd9,
                                      0,    0,    0,    0,    0, 0,  0,    0};
-        /* Eight zeros exceed the policy. Seven pass only the boundary gate. */
-        assert(!feed(false_eoi, sizeof(false_eoi), 1, 2));
+        /* It passes the boundary gate, cut at the EOI, and decoding rejects it. */
+        assert(feed(false_eoi, sizeof(false_eoi), 1, 2) && frame.size == 8);
+        assert(!photo_decode(frame.data, frame.size, pixels, width, width * 3 / 4));
         uint8_t malformed[16] = {0xff, 0xd8, 0xff, 0xfe, 0, 20, 1, 0xff, 0xd9};
         assert(feed(malformed, sizeof(malformed), 1, 2));
         assert(frame.size == 9 && frame.stats.padding_bytes == 7);
@@ -246,5 +249,5 @@ int main(void)
     test_boundaries();
     test_pipeline();
     puts(
-        "PASS: bounded aligned zero padding, observed tails, errors/truncation, full JPEG decode/photo/AVI pipeline, shared cap and guards");
+        "PASS: tails cut at the last EOI, observed tails, errors/truncation, full JPEG decode/photo/AVI pipeline, shared cap and guards");
 }

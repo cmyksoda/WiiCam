@@ -273,8 +273,8 @@ static const char *const expected[SCENARIOS] = {
     [THREAD_FAIL] = "list open params config descriptor alt0 alt1 set queue alt0 close",
     [OTHER_OK] = "list open params config descriptor alt0 alt1 set get queue",
     [OTHER_RATE_MISMATCH] = "list open params config descriptor alt0 alt1 set get alt0 close",
-    [OTHER_GET_SHORT] = "list open params config descriptor alt0 alt1 set get alt0 close",
-    [OTHER_GET_FAIL] = "list open params config descriptor alt0 alt1 set get alt0 close",
+    [OTHER_GET_SHORT] = "list open params config descriptor alt0 alt1 set get queue",
+    [OTHER_GET_FAIL] = "list open params config descriptor alt0 alt1 set get queue",
 };
 
 int main(void)
@@ -301,7 +301,13 @@ int main(void)
         if (scenario == NO_MODE) config[2] = 9, config[3] = 0;
         bool started = av_audio_start(video_id, &video);
         assert(!strcmp(calls, expected[scenario]));
-        assert(started == (scenario == SUCCESS || scenario == REUSED || scenario == OTHER_OK));
+        // A camera that can't report its rate still records, like the W2.
+        bool unreadable = scenario == OTHER_GET_SHORT || scenario == OTHER_GET_FAIL;
+        assert(started
+               == (scenario == SUCCESS || scenario == REUSED || scenario == OTHER_OK || unreadable));
+        assert(usb_session.microphone_failed
+               == (!started && scenario != USER_CANCEL && scenario != USER_EXIT
+                   && scenario != THREAD_FAIL));
         if (!started) {
             assert(!av_audio.opened && !av_audio.running && !usb_session.microphone_selected);
             const char *message = scenario == NO_MODE ? "No usable microphone"
@@ -323,7 +329,7 @@ int main(void)
         MicRateResult rate = scenario == OTHER_OK ? MIC_RATE_OK : MIC_RATE_UNREADABLE;
         assert(usb_session.microphone_rate == rate && av_audio.stream.rate == rate);
         /* Only an unreadable rate waits for the clock to settle before streaming. */
-        assert(queue_ms == (scenario == SUCCESS ? AV_RATE_SETTLE_MS : 0));
+        assert(queue_ms == (scenario == SUCCESS || unreadable ? AV_RATE_SETTLE_MS : 0));
         /* After a video alternate change the microphone stays selected for the next clip. */
         calls[0] = 0;
         usb_session.video_changed = scenario == REUSED;

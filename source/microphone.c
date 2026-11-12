@@ -129,10 +129,13 @@ MicRateResult microphone_set_rate(const CameraEntry *entry, const UacMode *mode,
         return MIC_RATE_FAILED;
     if (!mode->frequency_control) return MIC_RATE_OK;
     if (!control || !data || !(mode->endpoint & 0x80)) return MIC_RATE_FAILED;
+    // An alternate with one listed rate can only run at that rate, whatever the clock requests say.
+    bool fixed = mode->rate_count == 1;
     data[0] = mode->rate & 255;
     data[1] = mode->rate >> 8 & 255;
     data[2] = mode->rate >> 16 & 255;
-    if (control(context, 0x22, 1, 0x0100, mode->endpoint, data, 3) != 3) return MIC_RATE_FAILED;
+    if (control(context, 0x22, 1, 0x0100, mode->endpoint, data, 3) != 3)
+        return fixed ? MIC_RATE_UNREADABLE : MIC_RATE_FAILED;
     /* This exact camera profile repeatedly rejects rate readback. Avoid issuing
      * the failing GET before streaming; successful SET alone is not proof
      * of the clock rate, so retain the PCM timing check for this quirk. */
@@ -142,8 +145,10 @@ MicRateResult microphone_set_rate(const CameraEntry *entry, const UacMode *mode,
         && mode->interval == 4)
         return MIC_RATE_UNREADABLE;
     memset(data, 0, 3);
+    // Many webcams never answer this read; Linux carries on without it too.
     int result = control(context, 0xa2, 0x81, 0x0100, mode->endpoint, data, 3);
-    if (result != 3) return MIC_RATE_FAILED;
+    if (result != 3) return MIC_RATE_UNREADABLE;
     uint32_t rate = (uint32_t)data[0] | (uint32_t)data[1] << 8 | (uint32_t)data[2] << 16;
-    return rate == mode->rate ? MIC_RATE_OK : MIC_RATE_FAILED;
+    if (rate == mode->rate) return MIC_RATE_OK;
+    return fixed || !rate ? MIC_RATE_UNREADABLE : MIC_RATE_FAILED;
 }

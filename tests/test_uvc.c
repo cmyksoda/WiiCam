@@ -151,9 +151,24 @@ static void test_diagnostics(void)
 
     uvc_frame_init(&frame, buffer, sizeof(buffer));
     const uint8_t start[] = {2, 0x80, 0xff, 0xd8};
+    assert(!uvc_fid_ends_frame(&frame, start, sizeof(start)));
     assert(!uvc_packet(&frame, start, sizeof(start)));
+    assert(!uvc_fid_ends_frame(&frame, complete, sizeof(complete)));
     assert(uvc_packet(&frame, complete, sizeof(complete)));
     assert(frame.stats.missing_eof == 1 && frame.dropped == 1);
+    assert(frame.stats.samples == 1 && frame.stats.sample[0].reason == 'F');
+    assert(frame.stats.sample[0].size == 2 && frame.stats.sample[0].head[0] == 0xff);
+    assert(frame.stats.sample[0].tail[6] == 0xff && frame.stats.sample[0].tail[7] == 0xd8);
+
+    /* A camera that never sets EOF ends each frame by toggling FID. */
+    uvc_frame_init(&frame, buffer, sizeof(buffer));
+    const uint8_t whole[] = {2, 0x80, 0xff, 0xd8, 0xff, 0xd9}, next[] = {2, 0x81, 0xff, 0xd8};
+    assert(!uvc_packet(&frame, whole, sizeof(whole)));
+    assert(uvc_fid_ends_frame(&frame, next, sizeof(next)) && frame.size == 4);
+    assert(!uvc_fid_ends_frame(&frame, next, sizeof(next)));
+    assert(!uvc_packet(&frame, next, sizeof(next)));
+    assert(frame.stats.complete == 1 && frame.stats.fid_ends == 1 && !frame.dropped);
+    assert(!frame.stats.missing_eof && frame.size == 2);
     const uint8_t empty_end[] = {2, 0x82};
     assert(!uvc_packet(&frame, empty_end, sizeof(empty_end)));
     assert(frame.stats.invalid_jpeg == 0 && frame.stats.empty_frames == 1);

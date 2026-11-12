@@ -93,15 +93,15 @@ static void test_boundaries(void)
     } memory = {.before = 0x5a, .after = 0xa5};
 
     UvcFrame frame;
-    /* Nonzero padding remains rejected even with a nearby raw EOI pair. */
+    /* Bytes a camera adds after the EOI are cut off, whatever their value. */
     for (unsigned padding = 0; padding <= 7; ++padding) {
         uint8_t packet[20] = {2, 0x82, 0xff, 0xd8, 0x11, 0x22, 0xff, 0xd9};
         for (unsigned i = 0; i < padding; ++i)
             packet[8 + i] = 0xa5;
         uvc_frame_init(&frame, memory.bytes, sizeof(memory.bytes));
-        assert(uvc_packet(&frame, packet, 8 + padding) == (padding == 0));
-        assert(frame.stats.invalid_jpeg == (padding != 0));
-        assert(frame.stats.complete == (padding == 0));
+        assert(uvc_packet(&frame, packet, 8 + padding));
+        assert(frame.size == 6 && !frame.stats.invalid_jpeg && frame.stats.complete == 1);
+        assert(frame.stats.padding_bytes == padding);
     }
     uvc_frame_init(&frame, memory.bytes, sizeof(memory.bytes));
     uint8_t bad[] = {2, 0x82, 0, 1, 2, 3};
@@ -131,11 +131,11 @@ static void test_boundaries(void)
     assert(uvc_packet(&frame, end, sizeof(end)));
     assert(frame.stats.complete == 1 && !frame.stats.invalid_jpeg);
 
-    /* A long zero tail is rejected, and an oversized frame never writes past the buffer. */
+    /* A long zero tail is cut off too, and an oversized frame never writes past the buffer. */
     uvc_frame_init(&frame, memory.bytes, sizeof(memory.bytes));
     uint8_t large[82] = {2, 0x82, 0xff, 0xd8, 0xff, 0xd9};
-    assert(!uvc_packet(&frame, large, sizeof(large)));
-    assert(frame.stats.invalid_jpeg == 1);
+    assert(uvc_packet(&frame, large, sizeof(large)));
+    assert(frame.size == 4 && frame.stats.padding_bytes == 76 && !frame.stats.invalid_jpeg);
     uvc_frame_init(&frame, memory.bytes, 3);
     assert(!uvc_packet(&frame, large, sizeof(large)));
     assert(frame.stats.overflow == 1 && !frame.stats.invalid_jpeg);
@@ -149,6 +149,6 @@ int main(void)
     test_limits();
     test_boundaries();
     puts(
-        "PASS: exact descriptor limits, strict nonzero-tail rejection, padding/split/truncated markers, short/overflow bounds and reset");
+        "PASS: exact descriptor limits, tails cut at the last EOI, padding/split/truncated markers, short/overflow bounds and reset");
     return 0;
 }

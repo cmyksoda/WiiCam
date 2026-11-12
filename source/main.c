@@ -53,6 +53,7 @@ static uint8_t decode_rgb[WC04_RGB_CAPACITY];
 static uint32_t available_sizes = VIDEO_DEFAULT_SIZES;
 static volatile bool exit_requested;
 static bool mounted;
+static bool largest_packets;
 static FILE *log_file;
 static uint64_t session_start;
 static void *xfb[2];
@@ -94,6 +95,7 @@ typedef struct {
     UvcMode video_mode;
     UvcAlternate video_alt;
     bool video_changed, video_idle, video_parked, microphone_selected, audio_poisoned;
+    bool microphone_failed;
 } UsbSession;
 
 static UsbSession usb_session;
@@ -169,6 +171,8 @@ static void report(const char *format, ...)
         if (length >= 0) log_text(message);
         if (length >= (int)sizeof(message)) log_text("Log message truncated.\n");
         fflush(log_file);
+        // libfat saves a file's new length only on close or fsync, so a freeze would lose the lines.
+        fsync(fileno(log_file));
     }
 }
 
@@ -469,9 +473,13 @@ static bool parked_elsewhere(unsigned width, unsigned height, char *status, size
 static bool sound_needs_restart(unsigned width, unsigned height, char *status, size_t capacity)
 {
     if (parked_elsewhere(width, height, status, capacity)) return true;
-    if (!usb_session.audio_poisoned && !(usb_session.video_changed && !usb_session.video_parked))
+    if (!usb_session.microphone_failed && !usb_session.audio_poisoned
+        && !(usb_session.video_changed && !usb_session.video_parked))
         return false;
-    snprintf(status, capacity, "Restart WiiCam to record with sound");
+    // A restart can't help a microphone that failed on its own.
+    snprintf(status, capacity, "%s",
+             usb_session.microphone_failed ? "Microphone not available - see log"
+                                           : "Restart WiiCam to record with sound");
     return true;
 }
 
@@ -500,6 +508,12 @@ static bool probe_camera(s32 handle, const UvcMode *mode, UvcAlternate *alt)
     if (!uvc_negotiate(mode, alt, probe, probe_transfer, &camera)) {
         report("Probe/commit failed, short, or returned unsupported values.\n");
         return false;
+    }
+    if (largest_packets) {
+        unsigned asked = alt->capacity;
+        uvc_alternate_largest(mode, alt);
+        report("Test: largest packets, alternate %u (%u bytes) instead of %u bytes.\n", alt->number,
+               alt->capacity, asked);
     }
     return true;
 }
@@ -764,11 +778,31 @@ static bool consume_capture(void *context, const IsoSlot *slot)
             continue;
         }
         /* IOS retains requested strides; returned sizes are actual lengths. */
-        if (uvc_packet(frame, slot->data + i * alt->capacity, length))
-            preview_offer_at(&capture->preview, frame->data, frame->size,
-                             capture->audio_mode ? audio_stream_position(&av_audio.stream) : 0);
+        const uint8_t *packet = slot->data + i * alt->capacity;
+        unsigned position = capture->audio_mode ? audio_stream_position(&av_audio.stream) : 0;
+        if (uvc_fid_ends_frame(frame, packet, length))
+            preview_offer_at(&capture->preview, frame->data, frame->size, position);
+        if (uvc_packet(frame, packet, length))
+            preview_offer_at(&capture->preview, frame->data, frame->size, position);
     }
     return false;
+}
+
+static void report_video_stats(const UvcStats *stats)
+{
+    report("USB video: %u packets (%u empty, %u header only), %u with the error bit, %u bad "
+           "headers, %u overflows; frames: %u whole (%u ended by FID, %u with %u bytes after the "
+           "end), %u without EOF, %u without JPEG ends, %u empty.\n",
+           stats->packets, stats->empty, stats->header_only, stats->errors, stats->bad_headers,
+           stats->overflow, stats->complete, stats->fid_ends, stats->normalized_frames,
+           stats->padding_bytes, stats->missing_eof, stats->invalid_jpeg, stats->empty_frames);
+    for (unsigned n = 0; n < stats->samples; ++n) {
+        const UvcDropSample *d = &stats->sample[n];
+        report("Dropped frame %u: %c, %lu bytes, starts %02x %02x, ends %02x %02x %02x %02x %02x "
+               "%02x %02x %02x\n",
+               n + 1, d->reason, (unsigned long)d->size, d->head[0], d->head[1], d->tail[0],
+               d->tail[1], d->tail[2], d->tail[3], d->tail[4], d->tail[5], d->tail[6], d->tail[7]);
+    }
 }
 
 static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate *alt)
@@ -813,6 +847,7 @@ static IsoStop receive_photo(s32 handle, const UvcMode *mode, const UvcAlternate
            frame->dropped, capture.rejected);
     if (stats->header_only && !stats->payload_bytes && !stats->bad_headers)
         report("Only UVC headers received; no image payload reached the decoder.\n");
+    report_video_stats(stats);
     if (capture.audio_mode && av_recording.saved)
         report("Video saved: %s; %u frames with sound, %u repeated.\n", av_recording.path,
                av_recording.avi.frames, av_recording.repeated);
@@ -831,16 +866,29 @@ typedef struct {
     s32 handle;
     UacMode mode;
     CameraEntry entry;
+    s32 rate_set, rate_read;
 } Microphone;
+
+#define MIC_NOT_SENT INT32_MIN
+
+/* Each setup step gets its own buffer so one log line can show all of them. */
+static const char *mic_step(s32 result, unsigned slot)
+{
+    static char text[4][12];
+    if (result == MIC_NOT_SENT) return "not sent";
+    snprintf(text[slot], sizeof(text[slot]), "%ld", (long)result);
+    return text[slot];
+}
 
 static int mic_control(void *context, uint8_t type, uint8_t request, uint16_t value, uint16_t index,
                        uint8_t *data, unsigned length)
 {
-    const Microphone *microphone = context;
+    Microphone *microphone = context;
     s32 result = type & 0x80 ? USB_ReadCtrlMsg(microphone->handle, type, request, value, index,
                                                length, data)
                              : USB_WriteCtrlMsg(microphone->handle, type, request, value, index,
                                                 length, data);
+    *(type & 0x80 ? &microphone->rate_read : &microphone->rate_set) = result;
     return uvc_control_payload_length(result, length);
 }
 
@@ -1029,22 +1077,40 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
     atomic_init(&av_audio.last_ms, 0);
     bool reused = usb_session.microphone_selected;
     Microphone microphone = {.handle = usb_session.microphone,
-                             .mode = usb_session.microphone_mode};
-    if (!reused && !mic_open(handle, mode, &microphone)) return false;
+                             .mode = usb_session.microphone_mode,
+                             .rate_set = MIC_NOT_SENT,
+                             .rate_read = MIC_NOT_SENT};
+    if (!reused && !mic_open(handle, mode, &microphone)) {
+        usb_session.microphone_failed = true;
+        return false;
+    }
     av_audio.handle = microphone.handle;
     av_audio.mode = microphone.mode;
     av_audio.opened = true;
     MicRateResult rate = usb_session.microphone_rate;
     if (!reused) {
         rate = MIC_RATE_FAILED;
-        if (WC04_SetAlternate(microphone.handle, 0) == 0
-            && WC04_SetAlternate(microphone.handle, microphone.mode.alternate) == 0)
+        s32 idle = WC04_SetAlternate(microphone.handle, 0), active = MIC_NOT_SENT;
+        if (idle == 0) active = WC04_SetAlternate(microphone.handle, microphone.mode.alternate);
+        if (active == 0)
             rate = microphone_set_rate(&microphone.entry, &microphone.mode, mic_control,
                                        &microphone, probe);
+        char read[24] = "";
+        if (microphone.rate_read != MIC_NOT_SENT)
+            snprintf(read, sizeof(read), " (%u Hz)",
+                     (unsigned)(probe[0] | probe[1] << 8 | probe[2] << 16));
+        report("Microphone setup: alternate 0 -> %s, alternate %u -> %s, rate set -> %s, rate read "
+               "-> %s%s; %s.\n",
+               mic_step(idle, 0), microphone.mode.alternate, mic_step(active, 1),
+               mic_step(microphone.rate_set, 2), mic_step(microphone.rate_read, 3), read,
+               rate == MIC_RATE_OK       ? "rate confirmed"
+               : rate == MIC_RATE_FAILED ? "failed"
+                                         : "rate unconfirmed");
         usb_session.microphone = microphone.handle;
         usb_session.microphone_mode = microphone.mode;
         usb_session.microphone_rate = rate;
         usb_session.microphone_selected = rate != MIC_RATE_FAILED;
+        usb_session.microphone_failed = rate == MIC_RATE_FAILED;
     }
     uint64_t configured = gettime();
     audio_stream_init(&av_audio.stream, rate);
@@ -1067,7 +1133,7 @@ static bool av_audio_start(s32 handle, const UvcMode *mode)
                "%s.\n",
                microphone.mode.interface, microphone.mode.alternate, microphone.mode.endpoint,
                (unsigned)microphone.mode.rate, microphone.mode.channels,
-               rate == MIC_RATE_OK ? "confirmed" : "skipped for this camera");
+               rate == MIC_RATE_OK ? "confirmed" : "not available");
     return true;
 }
 
@@ -1158,8 +1224,10 @@ static IsoStop receive_av(s32 handle, const UvcMode *mode, UvcAlternate *alt, bo
     *video_changed = false;
     bind_usb_session(handle);
     if (usb_session.audio_poisoned || (usb_session.video_changed && !parked)) {
-        report("A/V needs a restart: this launch's video alternate changes leave IOS58 without "
-               "microphone data.\n");
+        report(usb_session.microphone_failed
+                   ? "A/V unavailable: this camera's microphone did not start in this launch.\n"
+                   : "A/V needs a restart: this launch's video alternate changes leave IOS58 "
+                     "without microphone data.\n");
         av_recording.failed = true;
         return ISO_SUBMIT_FAILED;
     }
@@ -1377,7 +1445,7 @@ int main(void)
     if (mounted && ensure_directory("sd:/wc04-camera"))
         log_file = fopen("sd:/wc04-camera/session.log", "a");
 
-    report("\nWiiCam test 3 - IOS %u\n", IOS_GetVersion());
+    report("\nWiiCam test 4 - IOS %u\n", IOS_GetVersion());
     bool usb_ready = false;
     bool patched = false;
     if (IOS_GetVersion() == 58) {
@@ -1435,6 +1503,14 @@ int main(void)
         if (idle_page == SCREEN_MENU && (down & (WPAD_BUTTON_LEFT | WPAD_BUTTON_RIGHT))) {
             screen_info.timer =
                 capture_timer_next(screen_info.timer, down & WPAD_BUTTON_LEFT ? -1 : 1);
+            menu = true;
+        }
+
+        // Test builds only: lets testers compare the camera's packet size with the largest one.
+        if (idle_page == SCREEN_MENU && (down & WPAD_BUTTON_DOWN)) {
+            largest_packets = !largest_packets;
+            snprintf(status, sizeof(status), "Test: USB packets %s",
+                     largest_packets ? "largest" : "as the camera asks");
             menu = true;
         }
 

@@ -247,6 +247,12 @@ bool uvc_alternate(const UvcMode *mode, uint32_t payload, UvcAlternate *alt)
     return found;
 }
 
+void uvc_alternate_largest(const UvcMode *mode, UvcAlternate *alt)
+{
+    for (size_t i = 0; i < mode->alt_count; ++i)
+        if (mode->alts[i].capacity > alt->capacity) *alt = mode->alts[i];
+}
+
 void uvc_probe_select(uint8_t data[UVC_PROBE_LENGTH], const UvcMode *mode)
 {
     /* Preserve camera-provided compression and timing fields. */
@@ -290,20 +296,52 @@ void uvc_frame_init(UvcFrame *frame, uint8_t *data, size_t capacity)
     *frame = (UvcFrame){.data = data, .capacity = capacity, .fid = -1};
 }
 
-/* Only the observed eight-byte alignment suffix is eligible for removal.
- * Boundary acceptance still requires full decoding before display or saving. */
+#define UVC_TAIL_SEARCH 4096u
+
+/* Entropy data can't hold FF D9, so the last one ends the JPEG, whatever padding a camera adds
+ * after it. Decoding still has to accept the frame before it's shown or saved. */
 static size_t jpeg_length(const UvcFrame *frame)
 {
     size_t length = frame->size;
     if (frame->discard || length < 4 || frame->data[0] != 0xff || frame->data[1] != 0xd8) return 0;
-    if (!(length & 7)) {
-        unsigned padding = 0;
-        while (padding < 7 && length > 4 && frame->data[length - 1] == 0) {
-            --length;
-            ++padding;
-        }
+    size_t stop = length > UVC_TAIL_SEARCH + 4 ? length - UVC_TAIL_SEARCH : 4;
+    for (size_t end = length; end >= stop; --end)
+        if (frame->data[end - 2] == 0xff && frame->data[end - 1] == 0xd9) return end;
+    return 0;
+}
+
+static void note_drop(UvcFrame *frame, char reason)
+{
+    UvcStats *stats = &frame->stats;
+    if (stats->samples == UVC_DROP_SAMPLES) return;
+    UvcDropSample *sample = &stats->sample[stats->samples++];
+    *sample = (UvcDropSample){.size = (uint32_t)frame->size, .reason = frame->discard ? 'D' : reason};
+    size_t head = frame->size < 2 ? frame->size : 2, tail = frame->size < 8 ? frame->size : 8;
+    memcpy(sample->head, frame->data, head);
+    memcpy(sample->tail + 8 - tail, frame->data + frame->size - tail, tail);
+}
+
+static void finish(UvcFrame *frame, size_t end)
+{
+    ++frame->stats.complete;
+    if (end != frame->size) {
+        ++frame->stats.normalized_frames;
+        frame->stats.padding_bytes += (unsigned)(frame->size - end);
+        frame->size = end;
     }
-    return frame->data[length - 2] == 0xff && frame->data[length - 1] == 0xd9 ? length : 0;
+}
+
+bool uvc_fid_ends_frame(UvcFrame *frame, const uint8_t *packet, size_t length)
+{
+    if (length < 2 || packet[0] < 2 || packet[0] > length || frame->fid == -1
+        || (packet[1] & 1) == frame->fid || !frame->size || frame->ended)
+        return false;
+    size_t end = jpeg_length(frame);
+    if (!end) return false;
+    frame->ended = true;
+    ++frame->stats.fid_ends;
+    finish(frame, end);
+    return true;
 }
 
 bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length)
@@ -337,6 +375,7 @@ bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length)
         if (frame->size && !frame->ended) {
             ++frame->dropped;
             ++frame->stats.missing_eof;
+            note_drop(frame, 'F');
         }
         frame->size = 0;
         frame->discard = false;
@@ -362,13 +401,9 @@ bool uvc_packet(UvcFrame *frame, const uint8_t *packet, size_t length)
             else
                 ++frame->stats.invalid_jpeg;
         }
+        if (frame->size) note_drop(frame, 'J');
         return false;
     }
-    ++frame->stats.complete;
-    if (normalized != frame->size) {
-        ++frame->stats.normalized_frames;
-        frame->stats.padding_bytes += (unsigned)(frame->size - normalized);
-        frame->size = normalized;
-    }
+    finish(frame, normalized);
     return true;
 }
