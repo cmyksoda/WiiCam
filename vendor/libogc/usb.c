@@ -1,14 +1,15 @@
-/* WC04 Camera altered version: added bounded descriptor access and two USBv5 control wrappers at EOF.
- * All existing libogc USB functions are unchanged. See vendor/libogc/README.md.
+/* WC04 Camera altered version of libogc2's usb.c: added bounded descriptor access and two USBv5 control wrappers at EOF.
+ * All existing libogc2 USB functions are unchanged.
  */
 /*-------------------------------------------------------------
 
 usb.c -- USB lowlevel
 
-Copyright (C) 2008
+Copyright (C) 2008 - 2025
 Michael Wiedenbauer (shagkur)
 Dave Murphy (WinterMute)
 tueidj
+Extrems' Corner.org
 
 This software is provided 'as-is', without any express or implied
 warranty.  In no event will the authors be held liable for any
@@ -31,7 +32,6 @@ distribution.
 
 -------------------------------------------------------------*/
 
-
 /*  Note: There are 3 types of USB interfaces here, the early ones
  *  (V0: /dev/usb/oh0 and /dev/usb/oh1) and two later ones (V5: /dev/usb/ven
  *  and /dev/usb/hid) which are similar but have some small
@@ -42,6 +42,7 @@ distribution.
  */
 
 #if defined(HW_RVL)
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -67,10 +68,8 @@ distribution.
 #define USBV0_IOCTL_DEVREMOVALHOOK              26
 #define USBV0_IOCTL_DEVINSERTHOOK               27
 #define USBV0_IOCTL_DEVICECLASSCHANGE           28
-#define USBV0_IOCTL_RESETDEVICE					29
 
 #define USBV4_IOCTL_GETVERSION                   6 // returns 0x40001
-#define USBV4_IOCTL_CANCELINTERRUPT				 8
 
 #define USBV5_IOCTL_GETVERSION                   0 // should return 0x50001
 #define USBV5_IOCTL_GETDEVICECHANGE              1
@@ -1088,41 +1087,6 @@ s32 USB_GetHIDDescriptor(s32 fd,u8 interface,usb_hiddesc *uhd,u32 size)
 	return retval;
 }
 
-s32 USB_GetReportDescriptorSize(s32 fd, u8 interface)
-{	
-	//Retrieve complete HID descriptor
-	//in testing it was always 9 bytes, but in the HID specifications it says it can be more (if the device has more than 1 descriptor).
-	//currently we only support 1 thou
-	usb_hiddesc hiddesc;
-	s32 retval = USB_GetHIDDescriptor(fd, interface, &hiddesc, USB_DT_HID_SIZE);
-	
-	if(retval < 0)
-		return retval;
-	
-	if(hiddesc.bLength > USB_DT_HID_SIZE)
-		return -1;
-	
-	retval = -2;
-	for(int i = 0; i < hiddesc.bNumDescriptors; i++)
-	{
-		if(hiddesc.descr[i].bDescriptorType == USB_DT_REPORT)
-		{
-			retval = hiddesc.descr[i].wDescriptorLength;
-			break;
-		}
-	}
-	
-	return retval;
-}
-
-s32 USB_GetReportDescriptor(s32 fd, u8 interface, void* data, u16 size)
-{
-	if (data == NULL || size < USB_DT_MINREPORT_SIZE)
-		return IPC_EINVAL;
-
-	return USB_GetGenericDescriptor(fd, USB_DT_REPORT, 0, interface, data, size);
-}
-
 void USB_FreeDescriptors(usb_devdesc *udd)
 {
 	int iConf, iInterface;
@@ -1470,7 +1434,7 @@ s32 USB_SetAlternativeInterface(s32 fd, u8 interface, u8 alternateSetting)
 	return __usb_control_message(fd, (USB_CTRLTYPE_DIR_HOST2DEVICE | USB_CTRLTYPE_TYPE_STANDARD | USB_CTRLTYPE_REC_INTERFACE), USB_REQ_SETINTERFACE, alternateSetting, interface, 0, NULL, NULL, NULL);
 }
 
-static s32 USBV5_CancelEndpoint(s32 device_id)
+static s32 USBV5_CancelEndpoint(s32 device_id, u8 endpoint)
 {
 	s32 ret;
 	s32 fd;
@@ -1486,34 +1450,17 @@ static s32 USBV5_CancelEndpoint(s32 device_id)
 	if (buf==NULL) return IPC_ENOMEM;
 
 	buf[0] = device_id;
-	
-	//Cancel all control messages
-	buf[2] = 0x00;
+	buf[2] = endpoint;
 	ret = IOS_Ioctl(fd, USBV5_IOCTL_CANCELENDPOINT, buf, 32, NULL, 0);
-	if(ret < 0)
-		goto ret;
-	
-	//Cancel all incoming interrupts
-	buf[2] = 0x01 << 24;
-	ret = IOS_Ioctl(fd, USBV5_IOCTL_CANCELENDPOINT, buf, 32, NULL, 0);
-	if(ret < 0)
-		goto ret;
-	
-	//Cancel all outgoing interrupts
-	buf[2] = 0x02 << 24;
-	ret = IOS_Ioctl(fd, USBV5_IOCTL_CANCELENDPOINT, buf, 32, NULL, 0);
-	if(ret < 0)
-		goto ret;
-	
-ret:
 	iosFree(hId, buf);
+
 	return ret;
 }
 
 s32 USB_ClearHalt(s32 fd, u8 endpoint)
 {
 	if (fd>=0x20 || fd<-1)
-		return USBV5_CancelEndpoint(fd);	
+		return USBV5_CancelEndpoint(fd, endpoint);
 	return __usb_control_message(fd, (USB_CTRLTYPE_DIR_HOST2DEVICE | USB_CTRLTYPE_TYPE_STANDARD | USB_CTRLTYPE_REC_ENDPOINT), USB_REQ_CLEARFEATURE, USB_FEATURE_ENDPOINT_HALT, endpoint, 0, NULL, NULL, NULL);
 }
 

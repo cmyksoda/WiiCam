@@ -1,7 +1,7 @@
 DEVKITPRO ?= /opt/devkitpro
 DEVKITPPC ?= $(DEVKITPRO)/devkitPPC
 export DEVKITPRO DEVKITPPC
-include $(DEVKITPPC)/wii_rules
+include $(DEVKITPRO)/libogc2/wii_rules
 
 .DEFAULT_GOAL := all
 CC := $(DEVKITPPC)/bin/powerpc-eabi-gcc

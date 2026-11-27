@@ -181,10 +181,8 @@ static void remote_power(s32 channel)
     request_exit();
 }
 
-static void reset_pressed(u32 irq, void *context)
+static void reset_pressed(void)
 {
-    (void)irq;
-    (void)context;
     request_exit();
 }
 
