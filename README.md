@@ -50,7 +50,7 @@ Sound needs a camera with a built-in microphone that records 16 kHz mono.
 
 ## Credits
 
-- **libogc**, **libfat**, and **devkitPPC** by devkitPro, with **libdvm** and ChaN's **FatFs** for the SD card
+- **libogc2** (Extrems' fork of libogc), **libfat**, and **devkitPPC** by devkitPro, with **libdvm** and ChaN's **FatFs** for the SD card
 - **libasnd** by Hermes, for sound playback
 - **libjpeg-turbo**, based in part on the work of the Independent JPEG Group
 - **wiiuse**, for the Wii Remote
@@ -59,7 +59,7 @@ Sound needs a camera with a built-in microphone that records 16 kHz mono.
 
 ## License
 
-WiiCam is free software under the [GNU General Public License, version 3 or later](LICENSE). Some parts use other licenses: the modified libogc USB source in `vendor/libogc` and the libraries keep their own licenses, and the interface font and HOME button glyph belong to Fontworks and Nintendo and are not covered by the GPL. All the texts are in [`dist/apps/wiicam/licenses/`](dist/apps/wiicam/licenses/).
+WiiCam is free software under the [GNU General Public License, version 3 or later](LICENSE). Some parts use other licenses: the modified libogc2 USB source in `vendor/libogc` and the libraries keep their own licenses, and the interface font and HOME button glyph belong to Fontworks and Nintendo and are not covered by the GPL. All the texts are in [`dist/apps/wiicam/licenses/`](dist/apps/wiicam/licenses/).
 
 WiiCam isn't affiliated with Nintendo, Fontworks, Ubisoft, or Guillemot.
 
